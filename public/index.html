@@ -123,7 +123,8 @@
 
     <section id="son-wifi-block" class="alert" aria-labelledby="son-wifi-block-title" aria-live="polite" hidden>
       <h2 id="son-wifi-block-title">A parent paused your internet</h2>
-      <p>You can still submit chores using mobile data. Finishing your chores won’t lift the pause. A parent can turn it off.</p>
+      <p id="grounding-progress" hidden></p>
+      <p>You can still submit chores using mobile data. A parent can turn off the pause.</p>
     </section>
 
     <section class="work" aria-labelledby="chores-title">
@@ -314,6 +315,12 @@
         checked ? detail + " • Verified " + checked : detail, live && !report.denyEnabled);
     }
 
+    function groundingProgress(grounding) {
+      const { remaining, days } = grounding;
+      if (remaining === 0) return "Grounding complete. Regular Wi-Fi rules resume at midnight Central.";
+      return remaining + " of " + days + " qualifying days left.";
+    }
+
     function render() {
       const state = boardState;
       $("today").textContent = dateDisplay.format(new Date());
@@ -323,9 +330,14 @@
       $("wifi-setup").hidden = !parent;
       $("wifi-override").hidden = !parent || !state;
       $("wifi-override").setAttribute("aria-pressed", String(Boolean(state?.wifiBlocked)));
-      $("wifi-override").textContent = state?.wifiBlocked ? "Punishment mode: On" : "Punishment mode: Off";
+      $("wifi-override").textContent = state?.grounding ? "Grounding: " + state.grounding.remaining + " days left"
+        : state?.wifiBlocked ? "Punishment mode: On" : "Punishment mode: Off";
       $("notifications").disabled = !state;
       $("son-wifi-block").hidden = parent || !state?.wifiBlocked;
+      $("grounding-progress").hidden = !state?.grounding;
+      $("grounding-progress").textContent = state?.grounding
+        ? groundingProgress(state.grounding) + " All four daily chores must be approved for a day to count."
+        : "";
       document.querySelector(".tabs").hidden = !state;
       if (!state) {
         $("mode-help").textContent = "Parents can sign in here. For Son’s View, open the invite link on this device.";
@@ -501,7 +513,15 @@
         const input = document.createElement(kind === "note" ? "textarea" : "input");
         input.name = name;
         input.required = true;
-        if (kind === "note") {
+        if (kind === "days") {
+          input.type = "number";
+          input.inputMode = "numeric";
+          input.min = 1;
+          input.max = 365;
+          input.step = 1;
+          input.required = false;
+          input.placeholder = "Leave blank for a manual pause";
+        } else if (kind === "note") {
           input.maxLength = 300;
           input.rows = 3;
         } else {
@@ -590,10 +610,13 @@
       if (!parent || !boardState) return;
       const blocked = !boardState.wifiBlocked;
       showForm(blocked ? "Turn on punishment mode?" : "Turn off punishment mode?",
-        blocked ? "Oliver’s internet stays blocked, even after chore approval, until a parent turns this off."
-          : "Oliver’s internet will follow the current daily chore approvals again.",
-        [], blocked ? "Block internet" : "Resume chore schedule", async () => {
-          await send("wifi-override", { blocked });
+        blocked ? "Enter a grounding length. Only days with all four daily chores approved count. Regular Wi-Fi rules resume after midnight Central on the last counted day."
+          : (boardState.grounding ? groundingProgress(boardState.grounding) + " " : "") + "Oliver’s internet will follow current daily chore approvals again.",
+        blocked ? [["days", "Qualifying days", "days"]] : [],
+        blocked ? "Block internet" : "Resume chore schedule", async (data) => {
+          const input = data.get("days");
+          const days = input ? Number(input) : null;
+          await send("wifi-override", { blocked, days });
           await refresh();
           notice(blocked ? "Parent block saved. Waiting for the PC to apply it."
             : "Parent block removed. The PC will apply the current chore status.");

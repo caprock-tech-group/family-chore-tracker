@@ -89,7 +89,9 @@ async function board(sql, parent) {
       (SELECT coalesce(sum(earned), 0)::integer FROM chore_submissions) AS earned,
       (SELECT json_build_object('checkedAt', checked_at, 'verifiedAt', verified_at,
         'denyEnabled', deny_enabled, 'healthy', healthy) FROM chore_wifi_status) AS wifi,
-      EXISTS (SELECT 1 FROM chore_wifi_override) AS "wifiBlocked"
+      coalesce((SELECT blocked FROM chore_wifi_grounding(${current.daily})), false) AS "wifiBlocked",
+      (SELECT json_build_object('days', days, 'remaining', remaining)
+        FROM chore_wifi_grounding(${current.daily}) WHERE blocked AND days IS NOT NULL) AS grounding
   `;
   const tasks = { daily: {}, weekly: {}, extra: {} };
   for (const row of rows[0].tasks) {
@@ -98,7 +100,7 @@ async function board(sql, parent) {
       photo: "/api/chores?photo=" + row.id
     };
   }
-  return json({ periods: current, tasks, earned: rows[0].earned, wifi: rows[0].wifi, wifiBlocked: rows[0].wifiBlocked, parent });
+  return json({ periods: current, tasks, earned: rows[0].earned, wifi: rows[0].wifi, wifiBlocked: rows[0].wifiBlocked, grounding: rows[0].grounding, parent });
 }
 
 async function submit(sql, body, announce) {
@@ -213,7 +215,7 @@ export default async function chores(req, context) {
       const period = periods().daily;
       const rows = await sql`
         SELECT count(*)::int AS approved,
-          EXISTS (SELECT 1 FROM chore_wifi_override) AS blocked
+          coalesce((SELECT blocked FROM chore_wifi_grounding(${period})), false) AS blocked
         FROM chore_submissions
         WHERE group_id = 'daily' AND period = ${period} AND status = 'approved'
           AND chore_id IN ('room', 'kitchen', 'gear', 'dog')
@@ -265,8 +267,19 @@ export default async function chores(req, context) {
     if (body.action === "wifi-override") {
       if (!parent) return json({ error: "Parent Review Mode is required for this action." }, 403);
       if (typeof body.blocked !== "boolean") return json({ error: "Choose a valid Wi-Fi override." }, 400);
+      const days = body.days ?? null;
+      if (days !== null && (!body.blocked || !Number.isInteger(days) || days < 1 || days > 365)) {
+        return json({ error: "Enter a grounding length between 1 and 365 days." }, 400);
+      }
       if (body.blocked) {
-        await sql`INSERT INTO chore_wifi_override DEFAULT VALUES ON CONFLICT DO NOTHING`;
+        const today = periods().daily;
+        await sql`
+          INSERT INTO chore_wifi_override (grounding_days, started_on, started_at)
+          VALUES (${days}, ${today}, now())
+          ON CONFLICT (singleton) DO UPDATE SET grounding_days = excluded.grounding_days,
+            started_on = excluded.started_on, started_at = excluded.started_at
+          WHERE NOT coalesce((SELECT blocked FROM chore_wifi_grounding(${today})), false)
+        `;
       } else {
         await sql`DELETE FROM chore_wifi_override WHERE singleton`;
       }

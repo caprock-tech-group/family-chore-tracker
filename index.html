@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f7f2">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="description" content="Track family chores, photo proof, privileges, and extra-credit earnings.">
+  <title>Family Chore Tracker</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4" defer></script>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #172e24; --muted: #52685c; --line: #dce6dd; --paper: #f6f7f2;
+      --green: #226548; --forest: #173b2d; --lime: #daf48f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--paper); }
+    h1, h2, h3, p { margin: 0; }
+    button, input, textarea { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .65; }
+    button, input, textarea { -webkit-tap-highlight-color: transparent; }
+    :focus-visible { outline: 3px solid #277c57; outline-offset: 3px; }
+    [hidden] { display: none !important; }
+    .shell { width: min(100% - 32px, 980px); margin-inline: auto; }
+    .masthead { background: #fff; border-bottom: 1px solid var(--line); }
+    .masthead .shell { padding-block: 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.025em; }
+    .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; color: var(--forest); background: var(--lime); }
+    .brand-mark svg, .metric-icon svg, .button svg { width: 20px; height: 20px; }
+    .roles { display: grid; grid-template-columns: .85fr 1.15fr; padding: 3px; border-radius: 13px; background: #edf2ed; }
+    .roles button, .tabs button { background: transparent; border: 0; color: var(--muted); border-radius: 10px; padding: 8px 10px; min-height: 44px; font-weight: 750; font-size: .83rem; }
+    .roles [aria-pressed="true"] { background: #fff; color: var(--ink); box-shadow: 0 1px 4px #173b2d1c; }
+    main.shell { padding-top: clamp(24px, 5vw, 50px); padding-bottom: max(24px, env(safe-area-inset-bottom)); }
+    .hero { border-radius: 24px; background: var(--forest); color: white; padding: clamp(18px, 4vw, 35px); }
+    .hero-top { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+    .eyebrow { color: #d8eead; text-transform: uppercase; font-size: .72rem; font-weight: 800; letter-spacing: .13em; }
+    h1 { margin-block: 6px; font-weight: 800; font-size: clamp(2rem, 6vw, 3.55rem); line-height: 1.04; letter-spacing: -.058em; }
+    .intro { color: #dae9de; font-size: .96rem; }
+    .date-chip { border: 1px solid #638273; border-radius: 99px; padding: 6px 11px; font-size: .78rem; font-weight: 700; }
+    .metrics { display: grid; gap: 8px; margin-top: 20px; }
+    .metric { display: flex; align-items: center; gap: 11px; background: #254c3c; border: 1px solid #507260; border-radius: 15px; padding: 10px 12px; min-width: 0; }
+    .metric-icon { flex: none; width: 37px; height: 37px; display: grid; place-items: center; border-radius: 11px; color: var(--lime); background: #365e49; }
+    .metric-label { color: #deece1; font-size: .75rem; font-weight: 650; }
+    .metric-value { color: #fff; font-weight: 800; font-size: 1.03rem; }
+    .metric-detail { color: #deece1; font-size: .73rem; }
+    .unlocked { color: var(--lime); }
+    .work { margin-top: 25px; }
+    .section-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+    h2 { font-size: 1.37rem; font-weight: 850; letter-spacing: -.032em; }
+    .subtitle, .task-help, .foot { color: var(--muted); font-size: .85rem; }
+    .tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; background: #e9efe8; border-radius: 14px; margin-bottom: 11px; }
+    .tabs [aria-selected="true"] { background: var(--forest); color: white; }
+    .cycle { font-size: .8rem; color: var(--muted); margin-bottom: 12px; }
+    .task-grid { display: grid; gap: 10px; }
+    .task { display: flex; flex-direction: column; gap: 10px; min-width: 0; background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 15px; }
+    .task-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+    .task h3 { font-size: 1rem; font-weight: 800; line-height: 1.25; letter-spacing: -.02em; }
+    .task-help { margin-top: 3px; }
+    .reward, .badge { display: inline-flex; align-items: center; align-self: flex-start; border-radius: 99px; padding: 4px 8px; font-size: .72rem; line-height: 1.35; font-weight: 750; }
+    .reward { white-space: nowrap; background: #e5f3d7; color: #295234; }
+    .badge { color: #43564d; background: #edf1ed; }
+    .badge.submitted { color: #674600; background: #ffebac; }
+    .badge.approved { color: #175535; background: #dcefe2; }
+    .badge.rejected { color: #852c2c; background: #fbe5e2; }
+    .actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-top: auto; }
+    .button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 12px; border: 1px solid transparent; border-radius: 10px; font-weight: 750; font-size: .83rem; background: var(--green); color: white; }
+    .button:hover { filter: brightness(.94); }
+    .secondary { border-color: #cfddd1; background: #fff; color: var(--ink); }
+    .danger { border-color: #efd1cd; color: #852c2c; background: #fff6f4; }
+    .proof { display: inline-flex; align-items: center; gap: 10px; width: fit-content; padding: 0; background: #fff; color: var(--green); border: 0; border-radius: 9px; font-size: .82rem; font-weight: 750; text-align: left; }
+    .proof img { width: 70px; height: 54px; object-fit: cover; border-radius: 9px; background: #eef2ed; }
+    .note, .alert { background: #fff2e0; color: #603d17; border-radius: 10px; padding: 9px 11px; font-size: .85rem; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .alert { margin-block: 10px; }
+    .foot { margin-top: 18px; line-height: 1.55; }
+    dialog { margin: auto; width: min(92vw, 450px); max-height: 92vh; overflow: auto; border: 1px solid var(--line); border-radius: 18px; padding: 19px; color: var(--ink); background: #fff; }
+    dialog::backdrop { background: #10281f99; }
+    dialog h2 { margin-bottom: 7px; }
+    dialog form { display: grid; gap: 11px; }
+    .dialog-fields { display: grid; gap: 8px; }
+    dialog label { display: grid; gap: 5px; font-weight: 750; font-size: .87rem; }
+    dialog input, dialog textarea { width: 100%; min-height: 44px; padding: 9px; border: 1px solid #aebeb1; border-radius: 8px; font-size: 16px; }
+    dialog textarea { resize: vertical; }
+    .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+    .dialog-error { color: #852c2c; font-size: .85rem; }
+    #photo-dialog { width: min(92vw, 760px); }
+    #full-photo { display: block; width: 100%; max-height: 67vh; object-fit: contain; background: #f0f4ee; border-radius: 10px; margin-block: 8px 12px; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+    @media (max-width: 480px) { .roles { width: 100%; } }
+    @media (min-width: 630px) { .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } .task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  </style>
+</head>
+<body class="antialiased">
+  <header class="masthead">
+    <div class="shell">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="m8 14 3 3 5-5"/></svg>
+        </span>
+        Family Chore Tracker
+      </div>
+      <div class="roles" role="group" aria-label="Choose view">
+        <button id="son-mode" type="button" aria-pressed="true">Son’s View</button>
+        <button id="parent-mode" type="button" aria-pressed="false">Parent Review Mode</button>
+      </div>
+    </div>
+  </header>
+  <main class="shell">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="hero-top">
+        <div>
+          <p class="eyebrow">Household dashboard</p>
+          <h1 id="page-title">Family Chore Tracker</h1>
+          <p class="intro">See what’s due, what’s unlocked, and what you’ve earned.</p>
+        </div>
+        <p class="date-chip" id="today"></p>
+      </div>
+      <div id="metrics" class="metrics" aria-live="polite"></div>
+    </section>
+
+    <section class="work" aria-labelledby="chores-title">
+      <div class="section-top">
+        <div>
+          <h2 id="chores-title">Chore board</h2>
+          <p class="subtitle" id="mode-help"></p>
+        </div>
+        <button id="settings" class="button secondary" type="button" hidden>PIN settings</button>
+      </div>
+      <p id="alert" class="alert" role="status" hidden></p>
+      <div class="tabs" role="tablist" aria-label="Chore categories">
+        <button type="button" role="tab" id="tab-daily" aria-controls="panel-daily" data-tab="daily">Daily Baselines</button>
+        <button type="button" role="tab" id="tab-weekly" aria-controls="panel-weekly" data-tab="weekly">Weekly Baselines</button>
+        <button type="button" role="tab" id="tab-extra" aria-controls="panel-extra" data-tab="extra">Monthly / Extra Credit</button>
+      </div>
+      <div id="panel-daily" role="tabpanel" aria-labelledby="tab-daily"></div>
+      <div id="panel-weekly" role="tabpanel" aria-labelledby="tab-weekly" hidden></div>
+      <div id="panel-extra" role="tabpanel" aria-labelledby="tab-extra" hidden></div>
+    </section>
+    <p class="foot">Photos, approvals, and earnings stay in this browser. Use this same device and browser for submissions and parent review.</p>
+    <noscript><p class="alert">Enable JavaScript to use the chore tracker.</p></noscript>
+  </main>
+
+  <input id="upload" class="visually-hidden" type="file" accept="image/*" tabindex="-1" aria-label="Upload photo">
+  <input id="camera" class="visually-hidden" type="file" accept="image/*" capture="environment" tabindex="-1" aria-label="Take photo">
+
+  <dialog id="form-dialog" aria-labelledby="dialog-title">
+    <form id="dialog-form">
+      <div><h2 id="dialog-title"></h2><p class="subtitle" id="dialog-help"></p></div>
+      <div id="dialog-fields" class="dialog-fields"></div>
+      <p id="dialog-error" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="button secondary" id="cancel-dialog">Cancel</button>
+        <button type="submit" class="button" id="confirm-dialog"></button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="photo-dialog" aria-labelledby="photo-title">
+    <h2 id="photo-title">Photo proof</h2>
+    <img id="full-photo" alt="Submitted chore proof">
+    <form method="dialog" class="dialog-actions">
+      <button type="submit" class="button secondary" autofocus>Close photo</button>
+    </form>
+  </dialog>
+
+  <script>
+    "use strict";
+
+    const chores = {
+      daily: [
+        ["room", "Personal Room Reset", "Make the bed, clear the floor, and put things away."],
+        ["kitchen", "Kitchen Contribution", "Handle the dishwasher and wipe the counters."],
+        ["gear", "Gear & Belongings Stowed", "Put shoes, bags, and sports gear in their places."],
+        ["dog", "Dog Feeding & Care", "Feed the dog, refill water, and handle assigned care."]
+      ],
+      weekly: [
+        ["laundry", "Laundry Complete & Put Away", "Wash, dry, fold, and put everything away."],
+        ["trash", "Trash & Recycling Protocol", "Empty household bins and sort trash and recycling."],
+        ["living", "Shared Living Space Maintenance", "Vacuum the living room."],
+        ["bath", "Bathroom Deep Clean", "Clean the toilet, sink, mirror, shower, and floor."]
+      ],
+      extra: [
+        ["trailer", "Wash Outside of Food Trailer", "", 20],
+        ["windows", "House Windows Deep Clean", "", 15],
+        ["mop", "Full House Sweep & Mop", "", 15],
+        ["dust", "Full House Dusting", "", 10],
+        ["vacuum", "Full House Vacuuming", "", 15],
+        ["mow", "Mowing Lawn & Yard Care", "", 20],
+        ["edge", "Weed Eating & Edging", "", 15],
+        ["vehicle", "Vehicle Detail", "", 20],
+        ["garage", "Deep Garage / Yard Project", "", 25],
+        ["pantry", "Pantry & Fridge Deep Clean", "", 10]
+      ]
+    };
+    const cycles = {
+      daily: "Unlocks screens and Wi-Fi. Resets at local midnight.",
+      weekly: "Unlocks sports transport and outings. Resets Monday at local midnight.",
+      extra: "Earn cash once per chore each month. Pending proof carries forward for review."
+    };
+    const statusText = {
+      open: "To do",
+      submitted: "Submitted - Awaiting Review",
+      approved: "✓ Approved",
+      rejected: "Redo requested"
+    };
+    const icons = {
+      wifi: '<path d="M3 9a15 15 0 0 1 18 0M6 13a10 10 0 0 1 12 0m-9 4a5 5 0 0 1 6 0m-3 3h.01"/>',
+      car: '<path d="m5 11 2-5h10l2 5M5 18v2m14-2v2M7 14h.01m10 0h.01M4 11h16a1 1 0 0 1 1 1v6H3v-6a1 1 0 0 1 1-1Z"/>',
+      cash: '<rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M6 12h.01m12 0h.01"/>'
+    };
+
+    const key = "family-chore-tracker:v1";
+    const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+    const dateDisplay = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" });
+    const $ = (id) => document.getElementById(id);
+    let activeTab = "daily";
+    let parent = false;
+    let pickerTarget = null;
+    let busy = null;
+    let dialogAction = null;
+    let displayPeriods = periods();
+
+    function periods(now = new Date()) {
+      const day = (date) => [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, "0"),
+        String(date.getDate()).padStart(2, "0")
+      ].join("-");
+      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+      monday.setDate(monday.getDate() - (monday.getDay() + 6) % 7);
+      return { daily: day(now), weekly: day(monday), extra: day(now).slice(0, 7) };
+    }
+
+    function blankState() {
+      return { pin: "1234", earned: 0, periods: periods(), tasks: { daily: {}, weekly: {}, extra: {} } };
+    }
+
+    function readState() {
+      const raw = localStorage.getItem(key);
+      if (raw === null) return blankState();
+      const state = JSON.parse(raw);
+      if (!/^\d{4}$/.test(state.pin) || !Number.isSafeInteger(state.earned) || state.earned < 0 ||
+          !state.periods || !state.tasks || Object.keys(chores).some((group) => !state.tasks[group])) {
+        throw new Error("Invalid saved data");
+      }
+      return state;
+    }
+
+    function currentState() {
+      const state = readState();
+      const now = periods();
+      for (const group of Object.keys(chores)) {
+        if (state.periods[group] === now[group]) continue;
+        // Keep an extra-credit submission available until a parent reviews it.
+        state.tasks[group] = group === "extra"
+          ? Object.fromEntries(Object.entries(state.tasks[group]).filter(([, task]) => task.status === "submitted"))
+          : {};
+        state.periods[group] = now[group];
+      }
+      return state;
+    }
+
+    function notice(message = "") {
+      $("alert").textContent = message;
+      $("alert").hidden = !message;
+    }
+
+    function saveError(error) {
+      return error.name === "QuotaExceededError"
+        ? "This browser’s photo storage is full. Your previous work is saved. Try a smaller photo or wait until a chore period resets."
+        : "The tracker couldn’t save in this browser. Check that site storage is available and try again.";
+    }
+
+    // Serialize changes across tabs where Web Locks are supported. Each write
+    // reads the latest state and commits proof, review, and earnings together.
+    async function update(change) {
+      const write = () => {
+        const state = currentState();
+        const outcome = change(state);
+        if (outcome) return outcome;
+        localStorage.setItem(key, JSON.stringify(state));
+        return "";
+      };
+      try {
+        return navigator.locks ? await navigator.locks.request(key, write) : write();
+      } catch (error) {
+        return saveError(error);
+      }
+    }
+
+    function button(label, handler, variant = "", taskName = "") {
+      const control = document.createElement("button");
+      control.type = "button";
+      control.className = "button " + variant;
+      control.textContent = label;
+      if (taskName) control.setAttribute("aria-label", label + " for " + taskName);
+      control.addEventListener("click", handler);
+      return control;
+    }
+
+    function metric(icon, label, value, detail, unlocked) {
+      const item = document.createElement("div");
+      item.className = "metric";
+      item.innerHTML = `<span class="metric-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${icons[icon]}</svg></span>
+        <div><p class="metric-label">${label}</p><p class="metric-value ${unlocked ? "unlocked" : ""}">${value}</p><p class="metric-detail">${detail}</p></div>`;
+      return item;
+    }
+
+    function render() {
+      let state;
+      try {
+        state = currentState();
+      } catch {
+        notice("Saved data is unavailable. Allow browser storage or reopen the tracker in the browser you used before.");
+        $("metrics").replaceChildren();
+        for (const group of Object.keys(chores)) $("panel-" + group).replaceChildren();
+        return;
+      }
+      displayPeriods = state.periods;
+      $("today").textContent = dateDisplay.format(new Date());
+      $("parent-mode").setAttribute("aria-pressed", String(parent));
+      $("son-mode").setAttribute("aria-pressed", String(!parent));
+      $("settings").hidden = !parent;
+      const pending = Object.values(state.tasks).flatMap(Object.values).filter((task) => task.status === "submitted").length;
+      $("mode-help").textContent = parent
+        ? `${pending} awaiting review across all categories.`
+        : "Finish a chore, then attach a photo for review.";
+      const approvedCount = (group) => chores[group].filter(([id]) => state.tasks[group][id]?.status === "approved").length;
+      const privilege = (group, icon, title) => {
+        const count = approvedCount(group);
+        const total = chores[group].length;
+        return metric(icon, title, count === total ? "Unlocked" : "Locked", `${count} of ${total} approved`, count === total);
+      };
+      $("metrics").replaceChildren(
+        privilege("daily", "wifi", "Daily Wi-Fi & Screens"),
+        privilege("weekly", "car", "Sports Transport & Outings"),
+        metric("cash", "Total Cash Earned", currency.format(state.earned), "All-time approved extra credit", true)
+      );
+      for (const group of Object.keys(chores)) {
+        const selected = group === activeTab;
+        const tab = $("tab-" + group);
+        const panel = $("panel-" + group);
+        tab.setAttribute("aria-selected", String(selected));
+        tab.tabIndex = selected ? 0 : -1;
+        panel.hidden = !selected;
+        if (!selected) {
+          panel.replaceChildren();
+          continue;
+        }
+        const cycle = document.createElement("p");
+        cycle.className = "cycle";
+        cycle.textContent = cycles[group];
+        const list = document.createElement("div");
+        list.className = "task-grid";
+        for (const chore of chores[group]) list.append(taskCard(group, chore, state.tasks[group][chore[0]]));
+        panel.replaceChildren(cycle, list);
+      }
+    }
+
+    function taskCard(group, [id, name, help, reward], task) {
+      const status = task?.status || "open";
+      const card = document.createElement("article");
+      card.className = "task";
+      card.innerHTML = '<div class="task-head"><div><h3></h3><p class="task-help" hidden></p></div><span class="reward" hidden></span></div><span class="badge"></span>';
+      card.querySelector("h3").textContent = name;
+      if (help) {
+        const hint = card.querySelector(".task-help");
+        hint.textContent = help;
+        hint.hidden = false;
+      }
+      if (reward) {
+        const pay = card.querySelector(".reward");
+        pay.textContent = currency.format(reward);
+        pay.hidden = false;
+      }
+      const badge = card.querySelector(".badge");
+      badge.classList.add(status);
+      badge.textContent = statusText[status];
+
+      if (typeof task?.photo === "string" && task.photo.startsWith("data:image/jpeg;base64,")) {
+        const preview = button("View proof", () => {
+          $("photo-title").textContent = name;
+          $("full-photo").src = task.photo;
+          $("full-photo").alt = "Photo proof for " + name;
+          $("photo-dialog").showModal();
+        }, "", name);
+        preview.className = "proof";
+        const thumbnail = document.createElement("img");
+        thumbnail.src = task.photo;
+        thumbnail.alt = "";
+        preview.prepend(thumbnail);
+        card.append(preview);
+      }
+      if (task?.note) {
+        const note = document.createElement("p");
+        note.className = "note";
+        note.textContent = "Parent note: " + task.note;
+        card.append(note);
+      }
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      if (parent && status === "submitted") {
+        actions.append(
+          button("✓ Approve", () => review(group, id, task, reward, ""), "", name),
+          button("Reject with note", () => reject(group, id, name, task, reward), "danger", name)
+        );
+      }
+      if (!parent && (status === "open" || status === "rejected")) {
+        for (const [input, label] of [["upload", status === "rejected" ? "Upload new proof" : "Upload proof"], ["camera", "Take photo"]]) {
+          const control = button(label, () => {
+            pickerTarget = { group, id, name, period: displayPeriods[group] };
+            $(input).value = "";
+            $(input).click();
+          }, input === "camera" ? "secondary" : "", name);
+          control.disabled = Boolean(busy);
+          if (busy?.id === id && input === "upload") control.textContent = "Saving photo…";
+          actions.append(control);
+        }
+      }
+      if (actions.childElementCount) card.append(actions);
+      return card;
+    }
+
+    async function compressPhoto(file) {
+      if (file.size > 35 * 1024 * 1024) throw new Error("Choose an image smaller than 35 MB.");
+      const url = URL.createObjectURL(file);
+      try {
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        if (!img.naturalWidth || !img.naturalHeight) throw new Error("The image has no dimensions.");
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d", { alpha: false });
+        for (const limit of [1120, 840, 640, 480, 320]) {
+          const scale = Math.min(1, limit / Math.max(img.naturalWidth, img.naturalHeight));
+          canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+          canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+          context.fillStyle = "#fff";
+          context.fillRect(0, 0, canvas.width, canvas.height);
+          context.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const photo = canvas.toDataURL("image/jpeg", .78);
+          if (photo.startsWith("data:image/jpeg;base64,") && photo.length <= 100000) return photo;
+        }
+      } catch {
+        throw new Error("This photo couldn’t be opened. Try a JPG, PNG, or a new camera photo.");
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      throw new Error("This photo couldn’t be made small enough. Try a different image.");
+    }
+
+    async function attachPhoto(event) {
+      const file = event.target.files[0];
+      const target = pickerTarget;
+      pickerTarget = null;
+      event.target.value = "";
+      if (!file || !target || parent || busy) return;
+      busy = target;
+      notice();
+      render();
+      try {
+        const photo = await compressPhoto(file);
+        const error = await update((state) => {
+          if (parent) return "Switch to Son’s View and attach the photo again.";
+          if (state.periods[target.group] !== target.period) return "A new chore period started. Please attach the photo again.";
+          const current = state.tasks[target.group][target.id];
+          if (current && current.status !== "rejected") return "This chore already has a submission.";
+          state.tasks[target.group][target.id] = { status: "submitted", photo, submittedAt: new Date().toISOString() };
+          return "";
+        });
+        notice(error || target.name + " submitted for review.");
+      } catch (error) {
+        notice(error.message);
+      } finally {
+        busy = null;
+        render();
+      }
+    }
+
+    function showForm(title, help, fields, confirm, action) {
+      $("dialog-title").textContent = title;
+      $("dialog-help").textContent = help;
+      $("dialog-error").hidden = true;
+      $("confirm-dialog").textContent = confirm;
+      $("confirm-dialog").disabled = false;
+      $("dialog-fields").replaceChildren();
+      for (const [name, label, kind] of fields) {
+        const wrapper = document.createElement("label");
+        wrapper.textContent = label;
+        const input = document.createElement(kind === "note" ? "textarea" : "input");
+        input.name = name;
+        input.required = true;
+        if (kind === "note") {
+          input.maxLength = 300;
+          input.rows = 3;
+        } else {
+          input.type = "password";
+          input.inputMode = "numeric";
+          input.autocomplete = kind === "new" ? "new-password" : "off";
+          input.pattern = "[0-9]{4}";
+          input.maxLength = 4;
+        }
+        wrapper.append(input);
+        $("dialog-fields").append(wrapper);
+      }
+      dialogAction = action;
+      $("form-dialog").showModal();
+      $("dialog-fields").querySelector("input, textarea").focus();
+    }
+
+    async function review(group, id, task, reward, note) {
+      const error = await update((state) => {
+        if (!parent) return "Enter Parent Review Mode to review chores.";
+        const current = state.tasks[group][id];
+        if (current?.status !== "submitted" || current.submittedAt !== task.submittedAt || current.photo !== task.photo) {
+          return "This submission changed. Refresh your review and try again.";
+        }
+        current.status = note ? "rejected" : "approved";
+        if (note) current.note = note;
+        if (reward && !note) state.earned += reward;
+        return "";
+      });
+      render();
+      if (!note || !error) notice(error || (note ? "Redo requested." : "Chore approved."));
+      return error;
+    }
+
+    function reject(group, id, name, task, reward) {
+      showForm("Request a redo", name, [["note", "What should be redone?", "note"]], "Send redo note", (data) => {
+        const note = data.get("note").trim();
+        return note ? review(group, id, task, reward, note) : "Enter a note before requesting a redo.";
+      });
+    }
+
+    $("son-mode").addEventListener("click", () => {
+      parent = false;
+      notice();
+      render();
+    });
+
+    $("parent-mode").addEventListener("click", () => {
+      if (parent) return;
+      showForm("Parent Review Mode", "Enter the four-digit parent PIN.", [["pin", "Parent PIN", "pin"]], "Unlock review", (data) => {
+        if (data.get("pin") !== readState().pin) return "That PIN is incorrect. Try again.";
+        parent = true;
+        notice();
+        render();
+        return "";
+      });
+    });
+
+    $("settings").addEventListener("click", () => {
+      if (!parent) return;
+      showForm("Change parent PIN", "Choose a four-digit PIN for this browser.", [
+        ["current", "Current PIN", "pin"],
+        ["next", "New PIN", "new"],
+        ["repeat", "Confirm new PIN", "new"]
+      ], "Save PIN", async (data) => {
+        const next = data.get("next");
+        if (next !== data.get("repeat")) return "The new PINs don’t match.";
+        const error = await update((state) => {
+          if (!parent || data.get("current") !== state.pin) return "The current PIN is incorrect.";
+          state.pin = next;
+          return "";
+        });
+        if (!error) notice("Parent PIN updated.");
+        return error;
+      });
+    });
+
+    $("dialog-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const confirm = $("confirm-dialog");
+      if (confirm.disabled) return;
+      confirm.disabled = true;
+      let error;
+      try {
+        error = await dialogAction(new FormData(event.target));
+      } catch (failure) {
+        error = saveError(failure);
+      }
+      confirm.disabled = false;
+      if (error) {
+        $("dialog-error").textContent = error;
+        $("dialog-error").hidden = false;
+      } else {
+        $("form-dialog").close();
+      }
+    });
+    $("cancel-dialog").addEventListener("click", () => {
+      if (!$("confirm-dialog").disabled) $("form-dialog").close();
+    });
+    $("form-dialog").addEventListener("cancel", (event) => {
+      if ($("confirm-dialog").disabled) event.preventDefault();
+    });
+    $("photo-dialog").addEventListener("close", () => $("full-photo").removeAttribute("src"));
+    for (const input of ["upload", "camera"]) $(input).addEventListener("change", attachPhoto);
+
+    const tabs = [...document.querySelectorAll("[data-tab]")];
+    function selectTab(tab) {
+      activeTab = tab.dataset.tab;
+      notice();
+      render();
+      tab.focus();
+    }
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("click", () => selectTab(tab));
+      tab.addEventListener("keydown", (event) => {
+        const target = { ArrowLeft: (index + tabs.length - 1) % tabs.length, ArrowRight: (index + 1) % tabs.length, Home: 0, End: tabs.length - 1 }[event.key];
+        if (target === undefined) return;
+        event.preventDefault();
+        selectTab(tabs[target]);
+      });
+    });
+
+    window.addEventListener("storage", (event) => {
+      if (event.key !== key && event.key !== null) return;
+      try {
+        if (event.key === null || JSON.parse(event.oldValue)?.pin !== JSON.parse(event.newValue)?.pin) parent = false;
+      } catch {
+        parent = false;
+      }
+      render();
+    });
+    function checkPeriod() {
+      const now = periods();
+      if (Object.keys(now).some((group) => now[group] !== displayPeriods[group])) render();
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") checkPeriod();
+    });
+    setInterval(checkPeriod, 15000);
+    render();
+  </script>
+</body>
+</html>

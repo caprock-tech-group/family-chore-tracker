@@ -7,7 +7,6 @@
   <meta name="robots" content="noindex, nofollow">
   <meta name="description" content="Track family chores, photo proof, privileges, and extra-credit earnings.">
   <title>Family Chore Tracker</title>
-  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4" defer></script>
   <style>
     :root {
       color-scheme: light;
@@ -16,7 +15,7 @@
       --green: #226548; --forest: #173b2d; --lime: #daf48f;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; color: var(--ink); background: var(--paper); }
+    body { -webkit-font-smoothing: antialiased; margin: 0; color: var(--ink); background: var(--paper); }
     h1, h2, h3, p { margin: 0; }
     button, input, textarea { font: inherit; }
     button { cursor: pointer; }
@@ -92,7 +91,7 @@
     @media (min-width: 630px) { .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } .task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   </style>
 </head>
-<body class="antialiased">
+<body>
   <header class="masthead">
     <div class="shell">
       <div class="brand">
@@ -126,7 +125,7 @@
           <h2 id="chores-title">Chore board</h2>
           <p class="subtitle" id="mode-help"></p>
         </div>
-        <button id="settings" class="button secondary" type="button" hidden>PIN settings</button>
+        <button id="settings" class="button secondary" type="button" hidden>Invite a device</button>
       </div>
       <p id="alert" class="alert" role="status" hidden></p>
       <div class="tabs" role="tablist" aria-label="Chore categories">
@@ -138,7 +137,7 @@
       <div id="panel-weekly" role="tabpanel" aria-labelledby="tab-weekly" hidden></div>
       <div id="panel-extra" role="tabpanel" aria-labelledby="tab-extra" hidden></div>
     </section>
-    <p class="foot">Photos, approvals, and earnings stay in this browser. Use this same device and browser for submissions and parent review.</p>
+    <p class="foot">Photos, approvals, and earnings are shared across invited devices. Daily and weekly periods follow Central time.</p>
     <noscript><p class="alert">Enable JavaScript to use the chore tracker.</p></noscript>
   </main>
 
@@ -194,8 +193,8 @@
       ]
     };
     const cycles = {
-      daily: "Unlocks screens and Wi-Fi. Resets at local midnight.",
-      weekly: "Unlocks sports transport and outings. Resets Monday at local midnight.",
+      daily: "Unlocks screens and Wi-Fi. Resets at midnight Central time.",
+      weekly: "Unlocks sports transport and outings. Resets Monday at midnight Central time.",
       extra: "Earn cash once per chore each month. Pending proof carries forward for review."
     };
     const statusText = {
@@ -210,82 +209,54 @@
       cash: '<rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M6 12h.01m12 0h.01"/>'
     };
 
-    const key = "family-chore-tracker:v1";
+    const endpoint = "/api/chores";
     const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
-    const dateDisplay = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" });
+    const dateDisplay = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "America/Chicago" });
     const $ = (id) => document.getElementById(id);
     let activeTab = "daily";
     let parent = false;
     let pickerTarget = null;
     let busy = null;
     let dialogAction = null;
-    let displayPeriods = periods();
-
-    function periods(now = new Date()) {
-      const day = (date) => [
-        date.getFullYear(),
-        String(date.getMonth() + 1).padStart(2, "0"),
-        String(date.getDate()).padStart(2, "0")
-      ].join("-");
-      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
-      monday.setDate(monday.getDate() - (monday.getDay() + 6) % 7);
-      return { daily: day(now), weekly: day(monday), extra: day(now).slice(0, 7) };
-    }
-
-    function blankState() {
-      return { pin: "1234", earned: 0, periods: periods(), tasks: { daily: {}, weekly: {}, extra: {} } };
-    }
-
-    function readState() {
-      const raw = localStorage.getItem(key);
-      if (raw === null) return blankState();
-      const state = JSON.parse(raw);
-      if (!/^\d{4}$/.test(state.pin) || !Number.isSafeInteger(state.earned) || state.earned < 0 ||
-          !state.periods || !state.tasks || Object.keys(chores).some((group) => !state.tasks[group])) {
-        throw new Error("Invalid saved data");
-      }
-      return state;
-    }
-
-    function currentState() {
-      const state = readState();
-      const now = periods();
-      for (const group of Object.keys(chores)) {
-        if (state.periods[group] === now[group]) continue;
-        // Keep an extra-credit submission available until a parent reviews it.
-        state.tasks[group] = group === "extra"
-          ? Object.fromEntries(Object.entries(state.tasks[group]).filter(([, task]) => task.status === "submitted"))
-          : {};
-        state.periods[group] = now[group];
-      }
-      return state;
-    }
+    let boardState = null;
+    let displayPeriods = {};
+    let requestVersion = 0;
 
     function notice(message = "") {
       $("alert").textContent = message;
       $("alert").hidden = !message;
     }
 
-    function saveError(error) {
-      return error.name === "QuotaExceededError"
-        ? "This browser’s photo storage is full. Your previous work is saved. Try a smaller photo or wait until a chore period resets."
-        : "The tracker couldn’t save in this browser. Check that site storage is available and try again.";
+    async function send(action, data = {}) {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...data })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "The tracker could not save your changes.");
+      return result;
     }
 
-    // Serialize changes across tabs where Web Locks are supported. Each write
-    // reads the latest state and commits proof, review, and earnings together.
-    async function update(change) {
-      const write = () => {
-        const state = currentState();
-        const outcome = change(state);
-        if (outcome) return outcome;
-        localStorage.setItem(key, JSON.stringify(state));
-        return "";
-      };
+    async function refresh() {
+      const version = ++requestVersion;
       try {
-        return navigator.locks ? await navigator.locks.request(key, write) : write();
-      } catch (error) {
-        return saveError(error);
+        const response = await fetch(endpoint, { cache: "no-store" });
+        const result = await response.json();
+        if (version !== requestVersion) return;
+        if (!response.ok) {
+          boardState = null;
+          parent = false;
+          notice(result.error);
+        } else {
+          const previous = JSON.stringify(boardState);
+          boardState = result;
+          parent = result.parent;
+          if (JSON.stringify(boardState) === previous) return;
+        }
+        render();
+      } catch {
+        if (version === requestVersion) notice("Could not reach the tracker. Check your connection and try again.");
       }
     }
 
@@ -308,20 +279,19 @@
     }
 
     function render() {
-      let state;
-      try {
-        state = currentState();
-      } catch {
-        notice("Saved data is unavailable. Allow browser storage or reopen the tracker in the browser you used before.");
+      const state = boardState;
+      $("today").textContent = dateDisplay.format(new Date());
+      $("parent-mode").setAttribute("aria-pressed", String(parent));
+      $("son-mode").setAttribute("aria-pressed", String(!parent));
+      $("settings").hidden = !parent;
+      document.querySelector(".tabs").hidden = !state;
+      if (!state) {
+        $("mode-help").textContent = "Parents can sign in here. For Son’s View, open the invite link on this device.";
         $("metrics").replaceChildren();
         for (const group of Object.keys(chores)) $("panel-" + group).replaceChildren();
         return;
       }
       displayPeriods = state.periods;
-      $("today").textContent = dateDisplay.format(new Date());
-      $("parent-mode").setAttribute("aria-pressed", String(parent));
-      $("son-mode").setAttribute("aria-pressed", String(!parent));
-      $("settings").hidden = !parent;
       const pending = Object.values(state.tasks).flatMap(Object.values).filter((task) => task.status === "submitted").length;
       $("mode-help").textContent = parent
         ? `${pending} awaiting review across all categories.`
@@ -378,7 +348,7 @@
       badge.classList.add(status);
       badge.textContent = statusText[status];
 
-      if (typeof task?.photo === "string" && task.photo.startsWith("data:image/jpeg;base64,")) {
+      if (typeof task?.photo === "string" && task.photo.startsWith("/api/chores?photo=")) {
         const preview = button("View proof", () => {
           $("photo-title").textContent = name;
           $("full-photo").src = task.photo;
@@ -403,8 +373,8 @@
       actions.className = "actions";
       if (parent && status === "submitted") {
         actions.append(
-          button("✓ Approve", () => review(group, id, task, reward, ""), "", name),
-          button("Reject with note", () => reject(group, id, name, task, reward), "danger", name)
+          button("✓ Approve", () => review(task, ""), "", name),
+          button("Reject with note", () => reject(name, task), "danger", name)
         );
       }
       if (!parent && (status === "open" || status === "rejected")) {
@@ -462,15 +432,9 @@
       render();
       try {
         const photo = await compressPhoto(file);
-        const error = await update((state) => {
-          if (parent) return "Switch to Son’s View and attach the photo again.";
-          if (state.periods[target.group] !== target.period) return "A new chore period started. Please attach the photo again.";
-          const current = state.tasks[target.group][target.id];
-          if (current && current.status !== "rejected") return "This chore already has a submission.";
-          state.tasks[target.group][target.id] = { status: "submitted", photo, submittedAt: new Date().toISOString() };
-          return "";
-        });
-        notice(error || target.name + " submitted for review.");
+        await send("submit", { group: target.group, chore: target.id, period: target.period, photo });
+        await refresh();
+        notice(target.name + " submitted for review.");
       } catch (error) {
         notice(error.message);
       } finally {
@@ -485,6 +449,8 @@
       $("dialog-error").hidden = true;
       $("confirm-dialog").textContent = confirm;
       $("confirm-dialog").disabled = false;
+      $("confirm-dialog").hidden = false;
+      $("cancel-dialog").textContent = "Cancel";
       $("dialog-fields").replaceChildren();
       for (const [name, label, kind] of fields) {
         const wrapper = document.createElement("label");
@@ -498,7 +464,7 @@
         } else {
           input.type = "password";
           input.inputMode = "numeric";
-          input.autocomplete = kind === "new" ? "new-password" : "off";
+          input.autocomplete = "off";
           input.pattern = "[0-9]{4}";
           input.maxLength = 4;
         }
@@ -507,85 +473,92 @@
       }
       dialogAction = action;
       $("form-dialog").showModal();
-      $("dialog-fields").querySelector("input, textarea").focus();
+      $("dialog-fields").querySelector("input, textarea")?.focus();
     }
 
-    async function review(group, id, task, reward, note) {
-      const error = await update((state) => {
-        if (!parent) return "Enter Parent Review Mode to review chores.";
-        const current = state.tasks[group][id];
-        if (current?.status !== "submitted" || current.submittedAt !== task.submittedAt || current.photo !== task.photo) {
-          return "This submission changed. Refresh your review and try again.";
-        }
-        current.status = note ? "rejected" : "approved";
-        if (note) current.note = note;
-        if (reward && !note) state.earned += reward;
+    async function review(task, note) {
+      try {
+        await send("review", { id: task.id, decision: note ? "rejected" : "approved", note });
+        await refresh();
+        notice(note ? "Redo requested." : "Chore approved.");
         return "";
-      });
-      render();
-      if (!note || !error) notice(error || (note ? "Redo requested." : "Chore approved."));
-      return error;
+      } catch (error) {
+        await refresh();
+        if (!note) notice(error.message);
+        return error.message;
+      }
     }
 
-    function reject(group, id, name, task, reward) {
+    function reject(name, task) {
       showForm("Request a redo", name, [["note", "What should be redone?", "note"]], "Send redo note", (data) => {
         const note = data.get("note").trim();
-        return note ? review(group, id, task, reward, note) : "Enter a note before requesting a redo.";
+        return note ? review(task, note) : "Enter a note before requesting a redo.";
       });
     }
 
-    $("son-mode").addEventListener("click", () => {
-      parent = false;
-      notice();
-      render();
+    $("son-mode").addEventListener("click", async () => {
+      try {
+        if (parent) await send("logout");
+        notice();
+        await refresh();
+      } catch (error) {
+        notice(error.message);
+      }
     });
 
     $("parent-mode").addEventListener("click", () => {
       if (parent) return;
-      showForm("Parent Review Mode", "Enter the four-digit parent PIN.", [["pin", "Parent PIN", "pin"]], "Unlock review", (data) => {
-        if (data.get("pin") !== readState().pin) return "That PIN is incorrect. Try again.";
-        parent = true;
+      showForm("Parent Review Mode", "Enter the four-digit parent PIN.", [["pin", "Parent PIN", "pin"]], "Unlock review", async (data) => {
+        await send("login", { pin: data.get("pin") });
         notice();
-        render();
+        await refresh();
         return "";
       });
     });
 
     $("settings").addEventListener("click", () => {
       if (!parent) return;
-      showForm("Change parent PIN", "Choose a four-digit PIN for this browser.", [
-        ["current", "Current PIN", "pin"],
-        ["next", "New PIN", "new"],
-        ["repeat", "Confirm new PIN", "new"]
-      ], "Save PIN", async (data) => {
-        const next = data.get("next");
-        if (next !== data.get("repeat")) return "The new PINs don’t match.";
-        const error = await update((state) => {
-          if (!parent || data.get("current") !== state.pin) return "The current PIN is incorrect.";
-          state.pin = next;
-          return "";
+      showForm("Invite a device", "Create a link for your son’s phone. The link expires in two hours.", [], "Create invite", async () => {
+        const { token } = await send("invite");
+        const link = location.origin + "/#join=" + encodeURIComponent(token);
+        const field = document.createElement("input");
+        field.readOnly = true;
+        field.setAttribute("aria-label", "Household invite link");
+        field.value = link;
+        const copy = button("Copy invite link", async () => {
+          try {
+            await navigator.clipboard.writeText(link);
+            copy.textContent = "Copied";
+          } catch {
+            field.select();
+          }
         });
-        if (!error) notice("Parent PIN updated.");
-        return error;
+        $("dialog-fields").replaceChildren(field, copy);
+        $("dialog-help").textContent = "Open this link on your son’s phone to join the household.";
+        $("cancel-dialog").textContent = "Done";
+        $("confirm-dialog").hidden = true;
+        field.focus();
+        field.select();
+        return null;
       });
     });
 
     $("dialog-form").addEventListener("submit", async (event) => {
       event.preventDefault();
       const confirm = $("confirm-dialog");
-      if (confirm.disabled) return;
+      if (confirm.disabled || confirm.hidden) return;
       confirm.disabled = true;
       let error;
       try {
         error = await dialogAction(new FormData(event.target));
       } catch (failure) {
-        error = saveError(failure);
+        error = failure.message || "The tracker could not complete this request.";
       }
       confirm.disabled = false;
       if (error) {
         $("dialog-error").textContent = error;
         $("dialog-error").hidden = false;
-      } else {
+      } else if (error !== null) {
         $("form-dialog").close();
       }
     });
@@ -615,24 +588,29 @@
       });
     });
 
-    window.addEventListener("storage", (event) => {
-      if (event.key !== key && event.key !== null) return;
-      try {
-        if (event.key === null || JSON.parse(event.oldValue)?.pin !== JSON.parse(event.newValue)?.pin) parent = false;
-      } catch {
-        parent = false;
+    async function start() {
+      const token = new URLSearchParams(location.hash.slice(1)).get("join");
+      if (token) {
+        history.replaceState(null, "", location.pathname + location.search);
+        try {
+          await send("join", { token });
+        } catch (error) {
+          await refresh();
+          notice(error.message);
+          return;
+        }
       }
-      render();
-    });
-    function checkPeriod() {
-      const now = periods();
-      if (Object.keys(now).some((group) => now[group] !== displayPeriods[group])) render();
+      await refresh();
     }
+
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") checkPeriod();
+      if (document.visibilityState === "visible") refresh();
     });
-    setInterval(checkPeriod, 15000);
+    setInterval(() => {
+      if (boardState && document.visibilityState === "visible") refresh();
+    }, 30000);
     render();
+    start();
   </script>
 </body>
 </html>

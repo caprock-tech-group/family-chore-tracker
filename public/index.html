@@ -260,11 +260,14 @@
           boardState = result;
           parent = result.parent;
           if (!pushRegistration) preparePush();
-          if (JSON.stringify(boardState) === previous) return;
+          if (!result.wifi && JSON.stringify(boardState) === previous) return;
         }
         render();
       } catch {
-        if (version === requestVersion) notice("Could not reach the tracker. Check your connection and try again.");
+        if (version === requestVersion) {
+          notice("Could not reach the tracker. Check your connection and try again.");
+          if (boardState?.wifi) render();
+        }
       }
     }
 
@@ -284,6 +287,24 @@
       item.innerHTML = `<span class="metric-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${icons[icon]}</svg></span>
         <div><p class="metric-label">${label}</p><p class="metric-value ${unlocked ? "unlocked" : ""}">${value}</p><p class="metric-detail">${detail}</p></div>`;
       return item;
+    }
+
+    function wifiMetric(report, unlocked) {
+      const fresh = report && Date.now() - Date.parse(report.checkedAt) < 180000;
+      const verified = typeof report?.denyEnabled === "boolean";
+      const live = fresh && report.healthy && verified;
+      const value = !verified ? "Awaiting verification"
+        : (live ? "" : "Last known: ") + (report.denyEnabled ? "Blocked" : "Allowed");
+      const health = !report ? "Awaiting first check-in"
+        : !fresh ? "PC check-in overdue"
+        : !report.healthy ? "Sync error"
+        : report.denyEnabled === unlocked ? "Waiting for Omada to sync" : "Integration online";
+      const checked = verified ? new Intl.DateTimeFormat("en-US", {
+        timeZone: "America/Chicago", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit", timeZoneName: "short"
+      }).format(new Date(report.verifiedAt)) : "";
+      return metric("wifi", "Oliver’s Wi-Fi Access", value,
+        checked ? health + " • Verified " + checked : health, live && !report.denyEnabled);
     }
 
     function render() {
@@ -314,6 +335,7 @@
       };
       $("metrics").replaceChildren(
         privilege("daily", "wifi", "Daily Wi-Fi & Screens"),
+        wifiMetric(state.wifi, approvedCount("daily") === chores.daily.length),
         privilege("weekly", "car", "Sports Transport & Outings"),
         metric("cash", "Total Cash Earned", currency.format(state.earned), "All-time approved extra credit", true)
       );

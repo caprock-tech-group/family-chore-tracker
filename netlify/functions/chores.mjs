@@ -86,7 +86,9 @@ async function board(sql, parent) {
       ORDER BY group_id, chore_id, period DESC
     )
     SELECT coalesce((SELECT json_agg(visible) FROM visible), '[]'::json) AS tasks,
-      (SELECT coalesce(sum(earned), 0)::integer FROM chore_submissions) AS earned
+      (SELECT coalesce(sum(earned), 0)::integer FROM chore_submissions) AS earned,
+      (SELECT json_build_object('checkedAt', checked_at, 'verifiedAt', verified_at,
+        'denyEnabled', deny_enabled, 'healthy', healthy) FROM chore_wifi_status) AS wifi
   `;
   const tasks = { daily: {}, weekly: {}, extra: {} };
   for (const row of rows[0].tasks) {
@@ -95,7 +97,7 @@ async function board(sql, parent) {
       photo: "/api/chores?photo=" + row.id
     };
   }
-  return json({ periods: current, tasks, earned: rows[0].earned, parent });
+  return json({ periods: current, tasks, earned: rows[0].earned, wifi: rows[0].wifi, parent });
 }
 
 async function submit(sql, body, announce) {
@@ -179,20 +181,43 @@ export default async function chores(req, context) {
   const parent = verifies(secret, readCookie(req, "chore-parent"), "parent");
   const family = parent || verifies(secret, readCookie(req, "chore-family"), "family");
   try {
-    if (req.method === "GET") {
-      if (url.searchParams.has("wifi")) {
-        const key = sign(secret, "oliver-wifi-read-v1");
-        if (!same(req.headers.get("authorization") ?? "", "Bearer " + key)) {
-          return json({ error: "Invalid Wi-Fi status key." }, 401);
-        }
-        const period = periods().daily;
-        const rows = await getDatabase().sql`
-          SELECT count(*)::int AS approved FROM chore_submissions
-          WHERE group_id = 'daily' AND period = ${period} AND status = 'approved'
-            AND chore_id IN ('room', 'kitchen', 'gear', 'dog')
-        `;
-        return json({ period, wifiUnlocked: rows[0].approved === groups.daily.length });
+    if (url.searchParams.has("wifi")) {
+      const key = sign(secret, "oliver-wifi-read-v1");
+      if (!same(req.headers.get("authorization") ?? "", "Bearer " + key)) {
+        return json({ error: "Invalid Wi-Fi status key." }, 401);
       }
+      const { sql } = getDatabase();
+      if (req.method === "POST") {
+        const raw = await req.text();
+        if (raw.length > 128) return json({ error: "Invalid check-in." }, 400);
+        let report;
+        try { report = JSON.parse(raw); } catch { return json({ error: "Invalid check-in." }, 400); }
+        if (!report || (report.healthy !== false &&
+            (report.healthy !== true || typeof report.denyEnabled !== "boolean"))) {
+          return json({ error: "Invalid check-in." }, 400);
+        }
+        const healthy = report.healthy;
+        const enabled = healthy ? report.denyEnabled : null;
+        await sql`
+          INSERT INTO chore_wifi_status (healthy, deny_enabled, verified_at)
+          VALUES (${healthy}, ${enabled}, CASE WHEN ${healthy} THEN now() END)
+          ON CONFLICT (singleton) DO UPDATE SET checked_at = now(),
+            healthy = excluded.healthy,
+            deny_enabled = coalesce(excluded.deny_enabled, chore_wifi_status.deny_enabled),
+            verified_at = coalesce(excluded.verified_at, chore_wifi_status.verified_at)
+        `;
+        return json({ ok: true });
+      }
+      if (req.method !== "GET") return json({ error: "Method not allowed." }, 405);
+      const period = periods().daily;
+      const rows = await sql`
+        SELECT count(*)::int AS approved FROM chore_submissions
+        WHERE group_id = 'daily' AND period = ${period} AND status = 'approved'
+          AND chore_id IN ('room', 'kitchen', 'gear', 'dog')
+      `;
+      return json({ period, wifiUnlocked: rows[0].approved === groups.daily.length });
+    }
+    if (req.method === "GET") {
       if (!family) return json({ error: "Join the household to view chores." }, 401);
       const { sql } = getDatabase();
       const photo = url.searchParams.get("photo");

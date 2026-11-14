@@ -33,6 +33,22 @@ function Read-Omada($Reply) {
     $Reply.result
 }
 
+function Send-WifiCheckIn([bool]$Healthy, $DenyEnabled = $null) {
+    $config = Import-Clixml -LiteralPath $settings
+    $key = ConvertTo-PlainText $config.WifiKey
+    $body = @{ healthy = $Healthy; denyEnabled = $DenyEnabled } | ConvertTo-Json -Compress
+    $file = [IO.Path]::GetTempFileName()
+    try {
+        [IO.File]::WriteAllText($file, $body)
+        $reply = Invoke-JsonCurl -Options @('--request', 'POST', '--header', '@-',
+            '--header', 'Content-Type: application/json', '--data-binary', "@$file") `
+            -InputText "Authorization: Bearer $key" -Url $tracker
+        if (-not $reply.ok) { throw 'Could not report Wi-Fi status to the tracker.' }
+    } finally {
+        Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Sync-Wifi([bool]$Write) {
     $config = Import-Clixml -LiteralPath $settings
     $wifiKey = ConvertTo-PlainText $config.WifiKey
@@ -68,7 +84,10 @@ function Sync-Wifi([bool]$Write) {
     if (-not $Write) {
         return "Dry run. Tracker unlocked: $($state.wifiUnlocked). Deny rule enabled now: $($rule.status). Would set deny rule to: $block."
     }
-    if ($rule.status -eq $block) { return "Deny rule already correct: $block." }
+    if ($rule.status -eq $block) {
+        Send-WifiCheckIn $true $rule.status
+        return "Deny rule already correct: $block."
+    }
     $payload = @{ status = $block }
     foreach ($field in @('description','policy','protocols','sourceIds','destinationIds','syslog',
         'sourceType','destinationType','direction','stateMode','states','timeRangeId')) {
@@ -85,6 +104,7 @@ function Sync-Wifi([bool]$Write) {
     $confirmed = Read-Omada (Invoke-JsonCurl -Options $options -InputText $header -Url $listUrl)
     $updated = @($confirmed.data | Where-Object { $_.id -ceq $aclId })
     if ($updated.Count -ne 1 -or $updated[0].status -ne $block) { throw 'Could not verify the ACL change.' }
+    Send-WifiCheckIn $true $updated[0].status
     return "Verified deny rule enabled: $block."
 }
 
@@ -111,7 +131,10 @@ if ($Mode -eq 'Apply') { Sync-Wifi $true; return }
 $previous = ''
 while ($true) {
     try { $message = Sync-Wifi $true }
-    catch { $message = 'Sync error: ' + $_.Exception.Message }
+    catch {
+        $message = 'Sync error: ' + $_.Exception.Message
+        try { Send-WifiCheckIn $false } catch {}
+    }
     if ($message -cne $previous) {
         if ((Test-Path -LiteralPath $log) -and (Get-Item -LiteralPath $log).Length -gt 1MB) {
             Move-Item -LiteralPath $log -Destination "$log.old" -Force

@@ -1,5 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { getDatabase } from "@netlify/database";
+import { cleanSubscription, deliver, notify, publicPushKey } from "../lib/push.mjs";
 
 const groups = {
   daily: ["room", "kitchen", "gear", "dog"],
@@ -97,10 +98,11 @@ async function board(sql, parent) {
   return json({ periods: current, tasks, earned: rows[0].earned, parent });
 }
 
-async function submit(sql, body) {
+async function submit(sql, body, announce) {
   const { group, chore, period, photo } = body;
   if (!Object.hasOwn(groups, group) || !groups[group].includes(chore)) return json({ error: "Unknown chore." }, 400);
-  if (period !== periods()[group]) return json({ error: "A new chore period started. Refresh and attach your photo again." }, 409);
+  const current = periods();
+  if (period !== current[group]) return json({ error: "A new chore period started. Refresh and attach your photo again." }, 409);
   const match = typeof photo === "string" && photo.length <= 100000 && /^data:image\/jpeg;base64,([a-z0-9+/]+={0,2})$/i.exec(photo);
   const bytes = match ? Buffer.from(match[1], "base64") : null;
   if (!bytes || bytes.length < 4 || bytes[0] !== 255 || bytes[1] !== 216 || bytes.at(-2) !== 255 || bytes.at(-1) !== 217) {
@@ -115,15 +117,25 @@ async function submit(sql, body) {
       SET id = excluded.id, photo = excluded.photo, status = 'submitted',
           note = '', submitted_at = now(), reviewed_at = null
       WHERE chore_submissions.status = 'rejected'
-      RETURNING id
+      RETURNING NOT EXISTS (
+        SELECT 1 FROM chore_submissions queued
+        WHERE queued.status = 'submitted' AND (
+          (queued.group_id = 'daily' AND queued.period = ${current.daily}) OR
+          (queued.group_id = 'weekly' AND queued.period = ${current.weekly}) OR
+          queued.group_id = 'extra'
+        )
+      ) AS was_empty
     `;
   } catch (error) {
     if (error.code !== "23505") throw error;
   }
+  if (rows?.[0]?.was_empty) announce("parent", {
+    body: "A chore is ready to review.", tab: group, topic: "review-ready"
+  });
   return rows?.length ? json({ ok: true }) : json({ error: "This chore already has a submission awaiting review or an approval." }, 409);
 }
 
-async function review(sql, body) {
+async function review(sql, body, announce) {
   const { id, decision } = body;
   const note = typeof body.note === "string" ? body.note.trim() : "";
   if (!uuid.test(id) || !["approved", "rejected"].includes(decision) || note.length > 300 || (decision === "rejected" && !note)) {
@@ -138,8 +150,22 @@ async function review(sql, body) {
     WHERE id = ${id} AND status = 'submitted'
       AND (group_id = 'extra' OR (group_id = 'daily' AND period = ${current.daily})
         OR (group_id = 'weekly' AND period = ${current.weekly}))
-    RETURNING id
+    RETURNING group_id, earned
   `;
+  if (rows.length) {
+    const { group_id: group, earned } = rows[0];
+    if (decision === "rejected") {
+      announce("son", { body: "A chore needs a redo. Open the tracker for the note.", tab: group });
+    } else if (earned > 0) {
+      announce("son", { body: "You earned $" + earned + " for an extra-credit chore.", tab: group });
+    } else {
+      announce("son", {
+        unlocked: { group, period: current[group], count: groups[group].length },
+        body: group === "daily" ? "Wi-Fi and screens are unlocked." : "Sports transport and outings are unlocked.",
+        tab: group, topic: group + "-unlocked"
+      });
+    }
+  }
   return rows.length ? json({ ok: true }) : json({ error: "This submission is no longer awaiting review." }, 409);
 }
 
@@ -164,6 +190,7 @@ export default async function chores(req, context) {
           ? new Response(Buffer.from(rows[0].photo, "base64"), { headers: { ...noCache, "Content-Type": "image/jpeg" } })
           : json({ error: "Photo not found." }, 404);
       }
+      if (url.searchParams.has("push")) return json({ key: publicPushKey(secret) });
       return await board(sql, parent);
     }
     if (req.method !== "POST") return json({ error: "Method not allowed." }, 405);
@@ -192,8 +219,45 @@ export default async function chores(req, context) {
     if (body.action === "logout") return json({ ok: true }, 200, [cookie("chore-parent", "", 0)]);
     if (!family) return json({ error: "Join the household first." }, 401);
     if (body.action === "invite" && parent) return json({ token: issue(secret, "invite", 2 * 60 * 60) });
-    if (body.action === "submit") return await submit(getDatabase().sql, body);
-    if (body.action === "review" && parent) return await review(getDatabase().sql, body);
+    const { sql } = getDatabase();
+    if (["push-enable", "push-disable", "push-test"].includes(body.action)) {
+      const subscription = cleanSubscription(body.subscription);
+      if (!subscription) return json({ error: "This browser’s notification subscription is unsupported." }, 400);
+      const serialized = JSON.stringify(subscription);
+      const role = parent ? "parent" : "son";
+      if (body.action === "push-enable") {
+        const rows = await sql`INSERT INTO chore_push_subscriptions (endpoint, role, subscription)
+          VALUES (${subscription.endpoint}, ${role}, ${serialized}::jsonb)
+          ON CONFLICT (endpoint) DO UPDATE SET role = excluded.role, updated_at = now()
+          WHERE chore_push_subscriptions.subscription = excluded.subscription RETURNING role`;
+        return rows.length ? json({ ok: true, role }) : json({ error: "Reconnect notifications on this device." }, 409);
+      }
+      const rows = await sql`SELECT endpoint, subscription FROM chore_push_subscriptions
+        WHERE endpoint = ${subscription.endpoint} AND subscription = ${serialized}::jsonb`;
+      if (body.action === "push-disable") {
+        await sql`DELETE FROM chore_push_subscriptions
+          WHERE endpoint = ${subscription.endpoint} AND subscription = ${serialized}::jsonb`;
+        return json({ ok: true });
+      }
+      if (!rows.length) return json({ error: "Enable notifications first." }, 409);
+      if (!await deliver(sql, secret, rows[0], { body: "Test notification. Your chore alerts are working." })) {
+        return json({ error: "The push service could not accept this test. Try enabling notifications again." }, 502);
+      }
+      return json({ ok: true });
+    }
+    const announce = (role, { unlocked, ...message }) => context.waitUntil((async () => {
+      if (unlocked) {
+        const { group, period, count } = unlocked;
+        const approved = await sql`SELECT count(*)::int AS count FROM chore_submissions
+          WHERE group_id = ${group} AND period = ${period} AND status = 'approved'`;
+        if (approved[0].count !== count) return;
+      }
+      await notify(sql, secret, role, message);
+    })().catch((error) => {
+      console.warn("Chore notification failed", error.code || error.name);
+    }));
+    if (body.action === "submit") return await submit(sql, body, announce);
+    if (body.action === "review" && parent) return await review(sql, body, announce);
     return json({ error: "Parent Review Mode is required for this action." }, 403);
   } catch (error) {
     console.error("Chore tracker request failed", error.code || error.name);

@@ -7,6 +7,8 @@
   <meta name="robots" content="noindex, nofollow">
   <meta name="description" content="Track family chores, photo proof, privileges, and extra-credit earnings.">
   <title>Family Chore Tracker</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/chore-icon.png">
   <style>
     :root {
       color-scheme: light;
@@ -125,6 +127,7 @@
           <h2 id="chores-title">Chore board</h2>
           <p class="subtitle" id="mode-help"></p>
         </div>
+        <button id="notifications" class="button secondary" type="button" disabled>Notifications</button>
         <button id="settings" class="button secondary" type="button" hidden>Invite a device</button>
       </div>
       <p id="alert" class="alert" role="status" hidden></p>
@@ -213,7 +216,10 @@
     const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
     const dateDisplay = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "America/Chicago" });
     const $ = (id) => document.getElementById(id);
-    let activeTab = "daily";
+    const requestedTab = new URLSearchParams(location.search).get("tab");
+    let activeTab = Object.hasOwn(chores, requestedTab) ? requestedTab : "daily";
+    let pushRegistration;
+    let pushKey;
     let parent = false;
     let pickerTarget = null;
     let busy = null;
@@ -252,6 +258,7 @@
           const previous = JSON.stringify(boardState);
           boardState = result;
           parent = result.parent;
+          if (!pushRegistration) preparePush();
           if (JSON.stringify(boardState) === previous) return;
         }
         render();
@@ -284,6 +291,7 @@
       $("parent-mode").setAttribute("aria-pressed", String(parent));
       $("son-mode").setAttribute("aria-pressed", String(!parent));
       $("settings").hidden = !parent;
+      $("notifications").disabled = !state;
       document.querySelector(".tabs").hidden = !state;
       if (!state) {
         $("mode-help").textContent = "Parents can sign in here. For Son’s View, open the invite link on this device.";
@@ -541,6 +549,82 @@
         field.select();
         return null;
       });
+    });
+
+    async function preparePush() {
+      if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return;
+      try {
+        const response = await fetch(endpoint + "?push=1", { cache: "no-store" });
+        if (!response.ok) return;
+        const { key } = await response.json();
+        pushKey = Uint8Array.from(atob(key.replace(/-/g, "+").replace(/_/g, "/")), (character) => character.charCodeAt(0));
+        await navigator.serviceWorker.register("/service-worker.js");
+        pushRegistration = await navigator.serviceWorker.ready;
+      } catch {
+        pushRegistration = null;
+      }
+    }
+
+    $("notifications").addEventListener("click", async () => {
+      if (!("PushManager" in window) || !("Notification" in window)) {
+        notice("On iPhone, add the tracker to your Home Screen and open it from that icon to use notifications.");
+        return;
+      }
+      if (!pushRegistration || !pushKey) {
+        await preparePush();
+        if (!pushRegistration || !pushKey) {
+          notice("Notifications are unavailable right now. Try again shortly.");
+          return;
+        }
+      }
+      const role = parent ? "parent" : "son";
+      const storageKey = "chore-notifications-role";
+      const savedRole = () => {
+        try { return localStorage.getItem(storageKey); } catch { return null; }
+      };
+      const saveRole = (value) => {
+        try {
+          if (value) localStorage.setItem(storageKey, value);
+          else localStorage.removeItem(storageKey);
+        } catch {}
+      };
+      const describeRole = (value) => value === "parent" ? "parent review" : "son";
+      showForm("Notifications", "Turn on alerts for this device.", [], "Enable notifications", async () => {
+        if (Notification.permission === "denied") {
+          return "Notifications are blocked. Allow them in this device’s notification settings, then try again.";
+        }
+        // Subscribe directly in the tap handler so iOS can show the permission prompt.
+        const subscription = await pushRegistration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: pushKey });
+        const result = await send("push-enable", { subscription: subscription.toJSON() });
+        saveRole(result.role);
+        notice("Notifications enabled for " + describeRole(result.role) + " on this device.");
+        return "";
+      });
+      const subscription = await pushRegistration.pushManager.getSubscription();
+      if (!$("form-dialog").open || !subscription) return;
+      const previous = savedRole();
+      if (previous) {
+        $("dialog-help").textContent = "This device is set to receive " + describeRole(previous) + " alerts.";
+        $("confirm-dialog").textContent = previous === role ? "Reconnect notifications" : "Switch to " + describeRole(role) + " alerts";
+      }
+      const run = async (action) => {
+        try {
+          await send(action, { subscription: subscription.toJSON() });
+          if (action === "push-disable") {
+            await subscription.unsubscribe();
+            saveRole(null);
+          }
+          $("form-dialog").close();
+          notice(action === "push-test" ? "Test notification sent. Check Notification Center." : "Notifications disabled on this device.");
+        } catch (error) {
+          $("dialog-error").textContent = error.message;
+          $("dialog-error").hidden = false;
+        }
+      };
+      $("dialog-fields").append(
+        button("Send test notification", () => run("push-test"), "secondary"),
+        button("Disable notifications", () => run("push-disable"), "secondary")
+      );
     });
 
     $("dialog-form").addEventListener("submit", async (event) => {

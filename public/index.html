@@ -128,6 +128,7 @@
           <p class="subtitle" id="mode-help"></p>
         </div>
         <button id="notifications" class="button secondary" type="button" disabled>Notifications</button>
+        <button id="wifi-setup" class="button secondary" type="button" hidden>Wi-Fi setup key</button>
         <button id="settings" class="button secondary" type="button" hidden>Invite a device</button>
       </div>
       <p id="alert" class="alert" role="status" hidden></p>
@@ -291,6 +292,7 @@
       $("parent-mode").setAttribute("aria-pressed", String(parent));
       $("son-mode").setAttribute("aria-pressed", String(!parent));
       $("settings").hidden = !parent;
+      $("wifi-setup").hidden = !parent;
       $("notifications").disabled = !state;
       document.querySelector(".tabs").hidden = !state;
       if (!state) {
@@ -546,6 +548,30 @@
         $("cancel-dialog").textContent = "Done";
         $("confirm-dialog").hidden = true;
         field.focus();
+        field.select();
+        return null;
+      });
+    });
+
+    $("wifi-setup").addEventListener("click", () => {
+      if (!parent) return;
+      showForm("Wi-Fi setup key", "Copy this key into the Windows setup prompt on your home PC.", [], "Show key", async () => {
+        const { key } = await send("wifi-key");
+        const field = document.createElement("input");
+        field.readOnly = true;
+        field.setAttribute("aria-label", "Wi-Fi setup key");
+        field.value = key;
+        const copy = button("Copy key", async () => {
+          try {
+            await navigator.clipboard.writeText(key);
+            copy.textContent = "Copied";
+          } catch {
+            field.select();
+          }
+        });
+        $("dialog-fields").replaceChildren(field, copy);
+        $("cancel-dialog").textContent = "Done";
+        $("confirm-dialog").hidden = true;
         field.select();
         return null;
       });

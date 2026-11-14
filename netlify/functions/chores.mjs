@@ -180,6 +180,19 @@ export default async function chores(req, context) {
   const family = parent || verifies(secret, readCookie(req, "chore-family"), "family");
   try {
     if (req.method === "GET") {
+      if (url.searchParams.has("wifi")) {
+        const key = sign(secret, "oliver-wifi-read-v1");
+        if (!same(req.headers.get("authorization") ?? "", "Bearer " + key)) {
+          return json({ error: "Invalid Wi-Fi status key." }, 401);
+        }
+        const period = periods().daily;
+        const rows = await getDatabase().sql`
+          SELECT count(*)::int AS approved FROM chore_submissions
+          WHERE group_id = 'daily' AND period = ${period} AND status = 'approved'
+            AND chore_id IN ('room', 'kitchen', 'gear', 'dog')
+        `;
+        return json({ period, wifiUnlocked: rows[0].approved === groups.daily.length });
+      }
       if (!family) return json({ error: "Join the household to view chores." }, 401);
       const { sql } = getDatabase();
       const photo = url.searchParams.get("photo");
@@ -219,6 +232,7 @@ export default async function chores(req, context) {
     if (body.action === "logout") return json({ ok: true }, 200, [cookie("chore-parent", "", 0)]);
     if (!family) return json({ error: "Join the household first." }, 401);
     if (body.action === "invite" && parent) return json({ token: issue(secret, "invite", 2 * 60 * 60) });
+    if (body.action === "wifi-key" && parent) return json({ key: sign(secret, "oliver-wifi-read-v1") });
     const { sql } = getDatabase();
     if (["push-enable", "push-disable", "push-test"].includes(body.action)) {
       const subscription = cleanSubscription(body.subscription);

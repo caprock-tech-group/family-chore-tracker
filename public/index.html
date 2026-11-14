@@ -83,6 +83,8 @@
     .dialog-fields { display: grid; gap: 8px; }
     dialog label { display: grid; gap: 5px; font-weight: 750; font-size: .87rem; }
     dialog input, dialog textarea { width: 100%; min-height: 44px; padding: 9px; border: 1px solid #aebeb1; border-radius: 8px; font-size: 16px; }
+    .bedtime-row { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: grid; gap: 6px; min-width: 0; }
+    .bedtime-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
     dialog textarea { resize: vertical; }
     .dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
     .dialog-error { color: #852c2c; font-size: .85rem; }
@@ -127,6 +129,10 @@
       <p>You can still submit chores using mobile data. A parent can turn off the pause.</p>
     </section>
 
+    <section id="bedtime-notice" class="alert" aria-labelledby="bedtime-heading" hidden>
+      <h2 id="bedtime-heading">Internet bedtime is active</h2>
+      <p id="bedtime-detail"></p>
+    </section>
     <section class="work" aria-labelledby="chores-title">
       <div class="section-top">
         <div>
@@ -135,6 +141,7 @@
         </div>
         <button id="notifications" class="button secondary" type="button" disabled>Notifications</button>
         <button id="wifi-override" class="button secondary" type="button" aria-pressed="false" hidden>Punishment mode</button>
+        <button id="wifi-bedtimes" class="button secondary" type="button" hidden>Wi-Fi bedtimes</button>
         <button id="wifi-setup" class="button secondary" type="button" hidden>Wi-Fi setup key</button>
         <button id="settings" class="button secondary" type="button" hidden>Invite a device</button>
       </div>
@@ -328,6 +335,14 @@
       $("son-mode").setAttribute("aria-pressed", String(!parent));
       $("settings").hidden = !parent;
       $("wifi-setup").hidden = !parent;
+      $("wifi-bedtimes").hidden = !parent || !state;
+      $("bedtime-notice").hidden = !state?.bedtime;
+      if (state?.bedtime) {
+        const [hour, minute] = state.bedtime.end.split(":").map(Number);
+        const end = (hour % 12 || 12) + ":" + String(minute).padStart(2, "0") + (hour < 12 ? " AM" : " PM");
+        $("bedtime-detail").textContent = state.bedtime.name + " • Ends at " + end +
+          " Central. Daily chores still have to be approved to unlock internet.";
+      }
       $("wifi-override").hidden = !parent || !state;
       $("wifi-override").setAttribute("aria-pressed", String(Boolean(state?.wifiBlocked)));
       $("wifi-override").textContent = state?.grounding ? "Grounding: " + state.grounding.remaining + " days left"
@@ -358,7 +373,7 @@
       };
       $("metrics").replaceChildren(
         privilege("daily", "wifi", "Daily Wi-Fi & Screens"),
-        wifiMetric(state.wifi, !state.wifiBlocked && approvedCount("daily") === chores.daily.length, state.wifiBlocked),
+        wifiMetric(state.wifi, !state.wifiBlocked && !state.bedtime && approvedCount("daily") === chores.daily.length, state.wifiBlocked),
         privilege("weekly", "car", "Sports Transport & Outings"),
         metric("cash", "Total Cash Earned", currency.format(state.earned), "All-time approved extra credit", true)
       );
@@ -622,6 +637,85 @@
             : "Parent block removed. The PC will apply the current chore status.");
           return "";
         });
+    });
+
+    $("wifi-bedtimes").addEventListener("click", () => {
+      if (!parent || !boardState) return;
+      const saved = boardState.bedtimeSchedule;
+      const ranges = [];
+      let rangeCount = 0;
+      const field = (label, type, value = "") => {
+        const wrapper = document.createElement("label");
+        wrapper.textContent = label;
+        const input = document.createElement("input");
+        input.type = type;
+        input.value = value;
+        if (type === "text") input.maxLength = 60;
+        wrapper.append(input);
+        return { wrapper, input };
+      };
+      const hours = (row, value) => {
+        const pair = document.createElement("div");
+        pair.className = "bedtime-pair";
+        const start = field("Internet off", "time", value?.start);
+        const end = field("Bedtime ends", "time", value?.end);
+        pair.append(start.wrapper, end.wrapper);
+        row.append(pair);
+        return () => ({ start: start.input.value, end: end.input.value });
+      };
+      const section = (title) => {
+        const row = document.createElement("fieldset");
+        row.className = "bedtime-row";
+        const legend = document.createElement("legend");
+        legend.textContent = title;
+        row.append(legend);
+        return row;
+      };
+      showForm("Wi-Fi bedtimes",
+        "All times are Central. Friday and Saturday are weekend nights. A range overrides the regular schedule for nights starting on its dates. Leave both times blank for no bedtime.",
+        [], "Save bedtimes", async () => {
+          const schedule = {
+            schoolNights: readSchool(), weekend: readWeekend(),
+            breaks: ranges.filter(({ row }) => row.isConnected).map(({ read }) => read())
+          };
+          await send("wifi-bedtimes", { schedule });
+          await refresh();
+          notice("Wi-Fi bedtimes saved. The PC will pick them up on its next check.");
+          return "";
+        });
+      const school = section("School nights · Sunday–Thursday");
+      const weekend = section("Weekend nights · Friday–Saturday");
+      const readSchool = hours(school, saved?.schoolNights);
+      const readWeekend = hours(weekend, saved?.weekend);
+      const container = $("dialog-fields");
+      const add = button("Add a date range", () => addRange().focus(), "secondary");
+      const addRange = (value = {}) => {
+        const row = section("Break or special dates");
+        const name = field("Name (e.g. Summer or Christmas break)", "text", value.name);
+        const from = field("First night", "date", value.from);
+        const through = field("Last night", "date", value.through);
+        const dates = document.createElement("div");
+        dates.className = "bedtime-pair";
+        dates.append(from.wrapper, through.wrapper);
+        row.append(name.wrapper, dates);
+        const readHours = hours(row, value.hours);
+        const range = { row, read: () => ({
+          name: name.input.value, from: from.input.value, through: through.input.value, ...readHours()
+        }) };
+        row.append(button("Remove date range", () => {
+          row.remove();
+          ranges.splice(ranges.indexOf(range), 1);
+          add.disabled = --rangeCount >= 20;
+          add.focus();
+        }, "secondary"));
+        ranges.push(range);
+        container.insertBefore(row, add);
+        add.disabled = ++rangeCount >= 20;
+        return name.input;
+      };
+      container.append(school, weekend, add);
+      for (const range of saved?.breaks ?? []) addRange(range);
+      school.querySelector("input").focus();
     });
 
     $("wifi-setup").addEventListener("click", () => {

@@ -2,6 +2,8 @@ import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { getDatabase } from "@netlify/database";
 import { cleanSubscription, deliver, notify, publicPushKey } from "../lib/push.mjs";
 
+import { activeBedtime, validateSchedule } from "../lib/bedtimes.mjs";
+
 const groups = {
   daily: ["room", "kitchen", "gear", "dog"],
   weekly: ["laundry", "trash", "living", "bath"],
@@ -91,7 +93,8 @@ async function board(sql, parent) {
         'denyEnabled', deny_enabled, 'healthy', healthy) FROM chore_wifi_status) AS wifi,
       coalesce((SELECT blocked FROM chore_wifi_grounding(${current.daily})), false) AS "wifiBlocked",
       (SELECT json_build_object('days', days, 'remaining', remaining)
-        FROM chore_wifi_grounding(${current.daily}) WHERE blocked AND days IS NOT NULL) AS grounding
+        FROM chore_wifi_grounding(${current.daily}) WHERE blocked AND days IS NOT NULL) AS grounding,
+      (SELECT schedule FROM chore_wifi_bedtimes) AS schedule
   `;
   const tasks = { daily: {}, weekly: {}, extra: {} };
   for (const row of rows[0].tasks) {
@@ -100,7 +103,8 @@ async function board(sql, parent) {
       photo: "/api/chores?photo=" + row.id
     };
   }
-  return json({ periods: current, tasks, earned: rows[0].earned, wifi: rows[0].wifi, wifiBlocked: rows[0].wifiBlocked, grounding: rows[0].grounding, parent });
+  return json({ periods: current, tasks, earned: rows[0].earned, wifi: rows[0].wifi, wifiBlocked: rows[0].wifiBlocked, grounding: rows[0].grounding, bedtime: activeBedtime(rows[0].schedule),
+    ...(parent ? { bedtimeSchedule: rows[0].schedule } : {}), parent });
 }
 
 async function submit(sql, body, announce) {
@@ -215,12 +219,13 @@ export default async function chores(req, context) {
       const period = periods().daily;
       const rows = await sql`
         SELECT count(*)::int AS approved,
-          coalesce((SELECT blocked FROM chore_wifi_grounding(${period})), false) AS blocked
+          coalesce((SELECT blocked FROM chore_wifi_grounding(${period})), false) AS blocked,
+          (SELECT schedule FROM chore_wifi_bedtimes) AS schedule
         FROM chore_submissions
         WHERE group_id = 'daily' AND period = ${period} AND status = 'approved'
           AND chore_id IN ('room', 'kitchen', 'gear', 'dog')
       `;
-      return json({ period, wifiUnlocked: !rows[0].blocked && rows[0].approved === groups.daily.length });
+      return json({ period, wifiUnlocked: !rows[0].blocked && !activeBedtime(rows[0].schedule) && rows[0].approved === groups.daily.length });
     }
     if (req.method === "GET") {
       if (!family) return json({ error: "Join the household to view chores." }, 401);
@@ -264,6 +269,20 @@ export default async function chores(req, context) {
     if (body.action === "invite" && parent) return json({ token: issue(secret, "invite", 2 * 60 * 60) });
     if (body.action === "wifi-key" && parent) return json({ key: sign(secret, "oliver-wifi-read-v1") });
     const { sql } = getDatabase();
+    if (body.action === "wifi-bedtimes") {
+      if (!parent) return json({ error: "Parent Review Mode is required for this action." }, 403);
+      let schedule;
+      try {
+        schedule = validateSchedule(body.schedule);
+      } catch (error) {
+        return json({ error: error.message }, 400);
+      }
+      await sql`
+        INSERT INTO chore_wifi_bedtimes (schedule) VALUES (${JSON.stringify(schedule)}::jsonb)
+        ON CONFLICT (singleton) DO UPDATE SET schedule = excluded.schedule
+      `;
+      return json({ ok: true });
+    }
     if (body.action === "wifi-override") {
       if (!parent) return json({ error: "Parent Review Mode is required for this action." }, 403);
       if (typeof body.blocked !== "boolean") return json({ error: "Choose a valid Wi-Fi override." }, 400);

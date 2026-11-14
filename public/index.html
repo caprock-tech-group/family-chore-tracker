@@ -121,6 +121,11 @@
       <div id="metrics" class="metrics" aria-live="polite"></div>
     </section>
 
+    <section id="son-wifi-block" class="alert" aria-labelledby="son-wifi-block-title" aria-live="polite" hidden>
+      <h2 id="son-wifi-block-title">A parent paused your internet</h2>
+      <p>You can still submit chores using mobile data. Finishing your chores won’t lift the pause. A parent can turn it off.</p>
+    </section>
+
     <section class="work" aria-labelledby="chores-title">
       <div class="section-top">
         <div>
@@ -320,6 +325,7 @@
       $("wifi-override").setAttribute("aria-pressed", String(Boolean(state?.wifiBlocked)));
       $("wifi-override").textContent = state?.wifiBlocked ? "Punishment mode: On" : "Punishment mode: Off";
       $("notifications").disabled = !state;
+      $("son-wifi-block").hidden = parent || !state?.wifiBlocked;
       document.querySelector(".tabs").hidden = !state;
       if (!state) {
         $("mode-help").textContent = "Parents can sign in here. For Son’s View, open the invite link on this device.";

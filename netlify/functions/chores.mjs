@@ -88,7 +88,8 @@ async function board(sql, parent) {
     SELECT coalesce((SELECT json_agg(visible) FROM visible), '[]'::json) AS tasks,
       (SELECT coalesce(sum(earned), 0)::integer FROM chore_submissions) AS earned,
       (SELECT json_build_object('checkedAt', checked_at, 'verifiedAt', verified_at,
-        'denyEnabled', deny_enabled, 'healthy', healthy) FROM chore_wifi_status) AS wifi
+        'denyEnabled', deny_enabled, 'healthy', healthy) FROM chore_wifi_status) AS wifi,
+      EXISTS (SELECT 1 FROM chore_wifi_override) AS "wifiBlocked"
   `;
   const tasks = { daily: {}, weekly: {}, extra: {} };
   for (const row of rows[0].tasks) {
@@ -97,7 +98,7 @@ async function board(sql, parent) {
       photo: "/api/chores?photo=" + row.id
     };
   }
-  return json({ periods: current, tasks, earned: rows[0].earned, wifi: rows[0].wifi, parent });
+  return json({ periods: current, tasks, earned: rows[0].earned, wifi: rows[0].wifi, wifiBlocked: rows[0].wifiBlocked, parent });
 }
 
 async function submit(sql, body, announce) {
@@ -163,7 +164,7 @@ async function review(sql, body, announce) {
     } else {
       announce("son", {
         unlocked: { group, period: current[group], count: groups[group].length },
-        body: group === "daily" ? "Wi-Fi and screens are unlocked." : "Sports transport and outings are unlocked.",
+        body: group === "daily" ? "All daily chores are approved." : "Sports transport and outings are unlocked.",
         tab: group, topic: group + "-unlocked"
       });
     }
@@ -211,11 +212,13 @@ export default async function chores(req, context) {
       if (req.method !== "GET") return json({ error: "Method not allowed." }, 405);
       const period = periods().daily;
       const rows = await sql`
-        SELECT count(*)::int AS approved FROM chore_submissions
+        SELECT count(*)::int AS approved,
+          EXISTS (SELECT 1 FROM chore_wifi_override) AS blocked
+        FROM chore_submissions
         WHERE group_id = 'daily' AND period = ${period} AND status = 'approved'
           AND chore_id IN ('room', 'kitchen', 'gear', 'dog')
       `;
-      return json({ period, wifiUnlocked: rows[0].approved === groups.daily.length });
+      return json({ period, wifiUnlocked: !rows[0].blocked && rows[0].approved === groups.daily.length });
     }
     if (req.method === "GET") {
       if (!family) return json({ error: "Join the household to view chores." }, 401);
@@ -259,6 +262,16 @@ export default async function chores(req, context) {
     if (body.action === "invite" && parent) return json({ token: issue(secret, "invite", 2 * 60 * 60) });
     if (body.action === "wifi-key" && parent) return json({ key: sign(secret, "oliver-wifi-read-v1") });
     const { sql } = getDatabase();
+    if (body.action === "wifi-override") {
+      if (!parent) return json({ error: "Parent Review Mode is required for this action." }, 403);
+      if (typeof body.blocked !== "boolean") return json({ error: "Choose a valid Wi-Fi override." }, 400);
+      if (body.blocked) {
+        await sql`INSERT INTO chore_wifi_override DEFAULT VALUES ON CONFLICT DO NOTHING`;
+      } else {
+        await sql`DELETE FROM chore_wifi_override WHERE singleton`;
+      }
+      return json({ ok: true });
+    }
     if (["push-enable", "push-disable", "push-test"].includes(body.action)) {
       const subscription = cleanSubscription(body.subscription);
       if (!subscription) return json({ error: "This browser’s notification subscription is unsupported." }, 400);

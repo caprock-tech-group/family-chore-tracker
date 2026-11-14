@@ -128,6 +128,7 @@
           <p class="subtitle" id="mode-help"></p>
         </div>
         <button id="notifications" class="button secondary" type="button" disabled>Notifications</button>
+        <button id="wifi-override" class="button secondary" type="button" aria-pressed="false" hidden>Punishment mode</button>
         <button id="wifi-setup" class="button secondary" type="button" hidden>Wi-Fi setup key</button>
         <button id="settings" class="button secondary" type="button" hidden>Invite a device</button>
       </div>
@@ -289,7 +290,7 @@
       return item;
     }
 
-    function wifiMetric(report, unlocked) {
+    function wifiMetric(report, unlocked, override) {
       const fresh = report && Date.now() - Date.parse(report.checkedAt) < 180000;
       const verified = typeof report?.denyEnabled === "boolean";
       const live = fresh && report.healthy && verified;
@@ -303,8 +304,9 @@
         timeZone: "America/Chicago", month: "short", day: "numeric",
         hour: "numeric", minute: "2-digit", timeZoneName: "short"
       }).format(new Date(report.verifiedAt)) : "";
+      const detail = (override ? "Parent block active • " : "") + health;
       return metric("wifi", "Oliver’s Wi-Fi Access", value,
-        checked ? health + " • Verified " + checked : health, live && !report.denyEnabled);
+        checked ? detail + " • Verified " + checked : detail, live && !report.denyEnabled);
     }
 
     function render() {
@@ -314,6 +316,9 @@
       $("son-mode").setAttribute("aria-pressed", String(!parent));
       $("settings").hidden = !parent;
       $("wifi-setup").hidden = !parent;
+      $("wifi-override").hidden = !parent || !state;
+      $("wifi-override").setAttribute("aria-pressed", String(Boolean(state?.wifiBlocked)));
+      $("wifi-override").textContent = state?.wifiBlocked ? "Punishment mode: On" : "Punishment mode: Off";
       $("notifications").disabled = !state;
       document.querySelector(".tabs").hidden = !state;
       if (!state) {
@@ -335,7 +340,7 @@
       };
       $("metrics").replaceChildren(
         privilege("daily", "wifi", "Daily Wi-Fi & Screens"),
-        wifiMetric(state.wifi, approvedCount("daily") === chores.daily.length),
+        wifiMetric(state.wifi, !state.wifiBlocked && approvedCount("daily") === chores.daily.length, state.wifiBlocked),
         privilege("weekly", "car", "Sports Transport & Outings"),
         metric("cash", "Total Cash Earned", currency.format(state.earned), "All-time approved extra credit", true)
       );
@@ -573,6 +578,21 @@
         field.select();
         return null;
       });
+    });
+
+    $("wifi-override").addEventListener("click", () => {
+      if (!parent || !boardState) return;
+      const blocked = !boardState.wifiBlocked;
+      showForm(blocked ? "Turn on punishment mode?" : "Turn off punishment mode?",
+        blocked ? "Oliver’s internet stays blocked, even after chore approval, until a parent turns this off."
+          : "Oliver’s internet will follow the current daily chore approvals again.",
+        [], blocked ? "Block internet" : "Resume chore schedule", async () => {
+          await send("wifi-override", { blocked });
+          await refresh();
+          notice(blocked ? "Parent block saved. Waiting for the PC to apply it."
+            : "Parent block removed. The PC will apply the current chore status.");
+          return "";
+        });
     });
 
     $("wifi-setup").addEventListener("click", () => {

@@ -72,6 +72,9 @@
     .secondary { border-color: #cfddd1; background: #fff; color: var(--ink); }
     .danger { border-color: #efd1cd; color: #852c2c; background: #fff6f4; }
     .proof { display: inline-flex; align-items: center; gap: 10px; width: fit-content; padding: 0; background: #fff; color: var(--green); border: 0; border-radius: 9px; font-size: .82rem; font-weight: 750; text-align: left; }
+    .proof-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+    .proof-grid figure { margin: 0; display: grid; gap: 4px; }
+    .proof-grid figure img { width: 88px; height: 68px; object-fit: cover; border-radius: 9px; }
     .proof img { width: 70px; height: 54px; object-fit: cover; border-radius: 9px; background: #eef2ed; }
     .note, .alert { background: #fff2e0; color: #603d17; border-radius: 10px; padding: 9px 11px; font-size: .85rem; overflow-wrap: anywhere; white-space: pre-wrap; }
     .alert { margin-block: 10px; }
@@ -159,8 +162,27 @@
     <noscript><p class="alert">Enable JavaScript to use the chore tracker.</p></noscript>
   </main>
 
-  <input id="upload" class="visually-hidden" type="file" accept="image/*" tabindex="-1" aria-label="Upload photo">
-  <input id="camera" class="visually-hidden" type="file" accept="image/*" capture="environment" tabindex="-1" aria-label="Take photo">
+  <dialog id="proof-upload-dialog" aria-labelledby="proof-upload-title">
+    <form id="proof-upload-form">
+      <div>
+        <h2 id="proof-upload-title">Add proof photos</h2>
+        <p class="subtitle" id="proof-upload-chore"></p>
+      </div>
+      <div class="actions">
+        <button id="choose-photos" type="button" class="button secondary">Choose photos</button>
+        <button id="take-proof-photo" type="button" class="button secondary">Take photo</button>
+      </div>
+      <input id="upload" class="visually-hidden" type="file" accept="image/*" multiple tabindex="-1" aria-label="Choose proof photos">
+      <input id="camera" class="visually-hidden" type="file" accept="image/*" capture="environment" tabindex="-1" aria-label="Take a proof photo">
+      <p id="proof-photo-count" class="subtitle" aria-live="polite"></p>
+      <div id="proof-upload-previews" class="proof-grid"></div>
+      <p id="proof-upload-error" class="dialog-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="cancel-proof" type="button" class="button secondary">Cancel</button>
+        <button id="submit-proof" type="submit" class="button">Submit for review</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="form-dialog" aria-labelledby="dialog-title">
     <form id="dialog-form">
@@ -236,8 +258,10 @@
     let pushRegistration;
     let pushKey;
     let parent = false;
-    let pickerTarget = null;
-    let busy = null;
+    const maxProofPhotos = 6;
+    let proofTarget = null;
+    let proofFiles = [];
+    let savingProof = false;
     let dialogAction = null;
     let boardState = null;
     let displayPeriods = {};
@@ -364,7 +388,7 @@
       const pending = Object.values(state.tasks).flatMap(Object.values).filter((task) => task.status === "submitted").length;
       $("mode-help").textContent = parent
         ? `${pending} awaiting review across all categories.`
-        : "Finish a chore, then attach a photo for review.";
+        : "Finish a chore, then add proof photos for review.";
       const approvedCount = (group) => chores[group].filter(([id]) => state.tasks[group][id]?.status === "approved").length;
       const privilege = (group, icon, title) => {
         const count = approvedCount(group);
@@ -418,19 +442,27 @@
       badge.classList.add(status);
       badge.textContent = statusText[status];
 
-      if (typeof task?.photo === "string" && task.photo.startsWith("/api/chores?photo=")) {
-        const preview = button("View proof", () => {
-          $("photo-title").textContent = name;
-          $("full-photo").src = task.photo;
-          $("full-photo").alt = "Photo proof for " + name;
-          $("photo-dialog").showModal();
-        }, "", name);
-        preview.className = "proof";
-        const thumbnail = document.createElement("img");
-        thumbnail.src = task.photo;
-        thumbnail.alt = "";
-        preview.prepend(thumbnail);
-        card.append(preview);
+      const photos = task?.photos ?? (task?.photo ? [task.photo] : []);
+      if (photos.length) {
+        const gallery = document.createElement("div");
+        gallery.className = "proof-grid";
+        photos.forEach((photo, index) => {
+          const label = photos.length === 1 ? "View proof" : "Photo " + (index + 1);
+          const preview = button(label, () => {
+            $("photo-title").textContent = name + " · " + (index + 1) + " of " + photos.length;
+            $("full-photo").src = photo;
+            $("full-photo").alt = "Photo proof for " + name;
+            $("photo-dialog").showModal();
+          }, "", name);
+          preview.className = "proof";
+          const thumbnail = document.createElement("img");
+          thumbnail.src = photo;
+          thumbnail.alt = "";
+          thumbnail.loading = "lazy";
+          preview.prepend(thumbnail);
+          gallery.append(preview);
+        });
+        card.append(gallery);
       }
       if (task?.note) {
         const note = document.createElement("p");
@@ -448,16 +480,13 @@
         );
       }
       if (!parent && (status === "open" || status === "rejected")) {
-        for (const [input, label] of [["upload", status === "rejected" ? "Upload new proof" : "Upload proof"], ["camera", "Take photo"]]) {
-          const control = button(label, () => {
-            pickerTarget = { group, id, name, period: displayPeriods[group] };
-            $(input).value = "";
-            $(input).click();
-          }, input === "camera" ? "secondary" : "", name);
-          control.disabled = Boolean(busy);
-          if (busy?.id === id && input === "upload") control.textContent = "Saving photo…";
-          actions.append(control);
-        }
+        actions.append(button(status === "rejected" ? "Add new proof photos" : "Add proof photos", () => {
+          proofTarget = { group, id, name, period: displayPeriods[group] };
+          $("proof-upload-chore").textContent = name;
+          proofError("");
+          renderProofFiles();
+          $("proof-upload-dialog").showModal();
+        }, "", name));
       }
       if (actions.childElementCount) card.append(actions);
       return card;
@@ -491,27 +520,88 @@
       throw new Error("This photo couldn’t be made small enough. Try a different image.");
     }
 
-    async function attachPhoto(event) {
-      const file = event.target.files[0];
-      const target = pickerTarget;
-      pickerTarget = null;
-      event.target.value = "";
-      if (!file || !target || parent || busy) return;
-      busy = target;
-      notice();
-      render();
-      try {
-        const photo = await compressPhoto(file);
-        await send("submit", { group: target.group, chore: target.id, period: target.period, photo });
-        await refresh();
-        notice(target.name + " submitted for review.");
-      } catch (error) {
-        notice(error.message);
-      } finally {
-        busy = null;
-        render();
-      }
+    function proofError(message) {
+      $("proof-upload-error").textContent = message;
+      $("proof-upload-error").hidden = !message;
     }
+
+    function renderProofFiles() {
+      const count = proofFiles.length;
+      $("proof-photo-count").textContent = count + " of " + maxProofPhotos + " photos added";
+      $("choose-photos").disabled = savingProof || count >= maxProofPhotos;
+      $("take-proof-photo").disabled = savingProof || count >= maxProofPhotos;
+      $("cancel-proof").disabled = savingProof;
+      $("submit-proof").disabled = savingProof || count === 0;
+      $("submit-proof").textContent = savingProof ? "Uploading photos…" : "Submit for review";
+      $("proof-upload-previews").replaceChildren(...proofFiles.map(({ url }, index) => {
+        const figure = document.createElement("figure");
+        const thumbnail = document.createElement("img");
+        thumbnail.src = url;
+        thumbnail.alt = "Selected proof photo " + (index + 1);
+        const remove = button("Remove", () => {
+          URL.revokeObjectURL(proofFiles[index].url);
+          proofFiles.splice(index, 1);
+          proofError("");
+          renderProofFiles();
+          $("choose-photos").focus();
+        }, "secondary", "photo " + (index + 1));
+        remove.disabled = savingProof;
+        figure.append(thumbnail, remove);
+        return figure;
+      }));
+    }
+
+    for (const [control, picker] of [["choose-photos", "upload"], ["take-proof-photo", "camera"]]) {
+      $(control).addEventListener("click", () => $(picker).click());
+      $(picker).addEventListener("change", (event) => {
+        const files = Array.from(event.target.files);
+        event.target.value = "";
+        if (!proofTarget || savingProof || !files.length) return;
+        if (proofFiles.length + files.length > maxProofPhotos) {
+          proofError("You can attach up to " + maxProofPhotos + " photos. Select fewer photos or remove one.");
+          return;
+        }
+        if (files.some((file) => file.size > 35 * 1024 * 1024)) {
+          proofError("Each photo must be smaller than 35 MB.");
+          return;
+        }
+        proofError("");
+        proofFiles.push(...files.map((file) => ({ file, url: URL.createObjectURL(file) })));
+        renderProofFiles();
+      });
+    }
+
+    $("cancel-proof").addEventListener("click", () => $("proof-upload-dialog").close());
+    $("proof-upload-dialog").addEventListener("cancel", (event) => {
+      if (savingProof) event.preventDefault();
+    });
+    $("proof-upload-dialog").addEventListener("close", () => {
+      for (const { url } of proofFiles) URL.revokeObjectURL(url);
+      proofFiles = [];
+      proofTarget = null;
+      $("proof-upload-previews").replaceChildren();
+    });
+    $("proof-upload-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!proofTarget || !proofFiles.length || savingProof) return;
+      const { group, id, name, period } = proofTarget;
+      savingProof = true;
+      proofError("");
+      renderProofFiles();
+      try {
+        const photos = [];
+        for (const { file } of proofFiles) photos.push(await compressPhoto(file));
+        await send("submit", { group, chore: id, period, photos });
+        $("proof-upload-dialog").close();
+        await refresh();
+        notice(name + " submitted for review.");
+      } catch (error) {
+        proofError(error.message);
+      } finally {
+        savingProof = false;
+        if ($("proof-upload-dialog").open) renderProofFiles();
+      }
+    });
 
     function showForm(title, help, fields, confirm, action) {
       $("dialog-title").textContent = title;
@@ -844,7 +934,6 @@
       if ($("confirm-dialog").disabled) event.preventDefault();
     });
     $("photo-dialog").addEventListener("close", () => $("full-photo").removeAttribute("src"));
-    for (const input of ["upload", "camera"]) $(input).addEventListener("change", attachPhoto);
 
     const tabs = [...document.querySelectorAll("[data-tab]")];
     function selectTab(tab) {

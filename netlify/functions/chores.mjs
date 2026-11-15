@@ -4,6 +4,7 @@ import { cleanSubscription, deliver, notify, publicPushKey } from "../lib/push.m
 
 import { activeBedtime, validateSchedule } from "../lib/bedtimes.mjs";
 
+const maxProofPhotos = 6;
 const groups = {
   daily: ["room", "kitchen", "gear", "dog"],
   weekly: ["laundry", "trash", "living", "bath"],
@@ -80,7 +81,7 @@ async function board(sql, parent) {
   const current = periods();
   const rows = await sql`
     WITH visible AS (
-      SELECT DISTINCT ON (group_id, chore_id) id, group_id, chore_id, status, note, period
+      SELECT DISTINCT ON (group_id, chore_id) id, group_id, chore_id, status, note, period, 1 + cardinality(extra_photos) AS photo_count
       FROM chore_submissions
       WHERE (group_id = 'daily' AND period = ${current.daily})
          OR (group_id = 'weekly' AND period = ${current.weekly})
@@ -100,7 +101,9 @@ async function board(sql, parent) {
   for (const row of rows[0].tasks) {
     tasks[row.group_id][row.chore_id] = {
       id: row.id, status: row.status, note: row.note,
-      photo: "/api/chores?photo=" + row.id
+      photo: "/api/chores?photo=" + row.id,
+      photos: Array.from({ length: row.photo_count }, (_, index) =>
+        "/api/chores?photo=" + row.id + "&index=" + index)
     };
   }
   return json({ periods: current, tasks, earned: rows[0].earned, wifi: rows[0].wifi, wifiBlocked: rows[0].wifiBlocked, grounding: rows[0].grounding, bedtime: activeBedtime(rows[0].schedule),
@@ -112,18 +115,30 @@ async function submit(sql, body, announce) {
   if (!Object.hasOwn(groups, group) || !groups[group].includes(chore)) return json({ error: "Unknown chore." }, 400);
   const current = periods();
   if (period !== current[group]) return json({ error: "A new chore period started. Refresh and attach your photo again." }, 409);
-  const match = typeof photo === "string" && photo.length <= 100000 && /^data:image\/jpeg;base64,([a-z0-9+/]+={0,2})$/i.exec(photo);
-  const bytes = match ? Buffer.from(match[1], "base64") : null;
-  if (!bytes || bytes.length < 4 || bytes[0] !== 255 || bytes[1] !== 216 || bytes.at(-2) !== 255 || bytes.at(-1) !== 217) {
-    return json({ error: "Attach a valid JPEG proof photo." }, 400);
+  const photos = body.photos === undefined ? [photo] : body.photos;
+  if (!Array.isArray(photos) || photos.length < 1 || photos.length > maxProofPhotos) {
+    return json({ error: "Attach between 1 and 6 proof photos." }, 400);
+  }
+  const encoded = [];
+  for (const image of photos) {
+    const match = typeof image === "string" && image.length <= 100000 &&
+      /^data:image\/jpeg;base64,([a-z0-9+/]+={0,2})$/i.exec(image);
+    const bytes = match ? Buffer.from(match[1], "base64") : null;
+    if (!bytes || bytes.length < 4 || bytes[0] !== 255 || bytes[1] !== 216 || bytes.at(-2) !== 255 || bytes.at(-1) !== 217) {
+      return json({ error: "Each proof photo must be a valid JPEG." }, 400);
+    }
+    encoded.push(match[1]);
   }
   let rows;
   try {
     rows = await sql`
-      INSERT INTO chore_submissions (id, group_id, chore_id, period, photo)
-      VALUES (${randomUUID()}, ${group}, ${chore}, ${period}, decode(${match[1]}, 'base64'))
+      INSERT INTO chore_submissions (id, group_id, chore_id, period, photo, extra_photos)
+      VALUES (${randomUUID()}, ${group}, ${chore}, ${period}, decode(${encoded[0]}, 'base64'),
+        ARRAY(SELECT decode(value, 'base64')
+          FROM jsonb_array_elements_text(${JSON.stringify(encoded.slice(1))}::jsonb)
+          WITH ORDINALITY AS item(value, position) ORDER BY position))
       ON CONFLICT (group_id, chore_id, period) DO UPDATE
-      SET id = excluded.id, photo = excluded.photo, status = 'submitted',
+      SET id = excluded.id, photo = excluded.photo, extra_photos = excluded.extra_photos, status = 'submitted',
           note = '', submitted_at = now(), reviewed_at = null
       WHERE chore_submissions.status = 'rejected'
       RETURNING NOT EXISTS (
@@ -232,9 +247,14 @@ export default async function chores(req, context) {
       const { sql } = getDatabase();
       const photo = url.searchParams.get("photo");
       if (photo !== null) {
-        if (!uuid.test(photo)) return json({ error: "Photo not found." }, 404);
-        const rows = await sql`SELECT encode(photo, 'base64') AS photo FROM chore_submissions WHERE id = ${photo}`;
-        return rows.length
+        const index = url.searchParams.get("index") ?? "0";
+        if (!uuid.test(photo) || !/^[0-5]$/.test(index)) return json({ error: "Photo not found." }, 404);
+        const rows = await sql`
+          SELECT encode(CASE WHEN ${Number(index)}::integer = 0 THEN photo
+                        ELSE extra_photos[${Number(index)}::integer] END, 'base64') AS photo
+          FROM chore_submissions WHERE id = ${photo}
+        `;
+        return rows[0]?.photo
           ? new Response(Buffer.from(rows[0].photo, "base64"), { headers: { ...noCache, "Content-Type": "image/jpeg" } })
           : json({ error: "Photo not found." }, 404);
       }
@@ -246,7 +266,7 @@ export default async function chores(req, context) {
       return json({ error: "Invalid request origin or format." }, 403);
     }
     const raw = await req.text();
-    if (raw.length > 102400) return json({ error: "Photo is too large." }, 413);
+    if (raw.length > maxProofPhotos * 100000 + 2400) return json({ error: "Proof upload is too large." }, 413);
     let body;
     try { body = JSON.parse(raw); } catch { return json({ error: "Invalid request." }, 400); }
     if (!body || typeof body !== "object") return json({ error: "Invalid request." }, 400);
